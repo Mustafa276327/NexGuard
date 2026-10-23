@@ -35,6 +35,10 @@ class Scanner @Inject constructor(private val db: AppDatabase, private val bus: 
     private val orchestrator = ScanOrchestrator(detectors, db, bus)
 
     suspend fun scanFile(path: String): ScanResult = orchestrator.scanFile(path)
-    suspend fun scanDirectory(root: String, onProgress: (Int, Int) -> Unit = { _, _ -> }): List<ScanResult> =
-        orchestrator.scanDirectory(root, onProgress)
+    suspend fun scanDirectory(
+        root: String,
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+        onFileStart: (String) -> Unit = {},
+        onFileDone: (ScanResult) -> Unit = {}
+    ): List<ScanResult> = orchestrator.scanDirectory(root, onProgress, onFileStart, onFileDone)
 }

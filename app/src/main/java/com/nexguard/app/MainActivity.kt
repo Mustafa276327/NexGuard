@@ -5,69 +5,63 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.*
-import androidx.compose.runtime.LaunchedEffect
-import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import com.nexguard.feature.home.HomeScreen
-import com.nexguard.feature.home.PlaceholderScreen
-import com.nexguard.feature.onboarding.OnboardingScreen
-import com.nexguard.feature.scan.Scanner
-import com.nexguard.feature.settings.LogScreen
 import com.nexguard.app.admin.DeviceAdminReceiver
+import com.nexguard.app.ui.apps.AppsRoute
+import com.nexguard.app.ui.device.DeviceRoute
+import com.nexguard.app.ui.history.HistoryRoute
+import com.nexguard.app.ui.home.HomeRoute
+import com.nexguard.app.ui.quarantine.QuarantineRoute
+import com.nexguard.app.ui.scan.ScanRoute
+import com.nexguard.app.ui.settings.SettingsRoute
+import com.nexguard.app.ui.sites.SitesRoute
 import com.nexguard.app.ui.theme.NexGuardTheme
+import com.nexguard.app.ui.wifi.WifiRoute
+import com.nexguard.feature.onboarding.OnboardingScreen
 import dagger.hilt.android.AndroidEntryPoint
-import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
-    @Inject lateinit var scanner: javax.inject.Provider<Scanner>
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             NexGuardTheme {
                 val nav = rememberNavController()
-                var logLines by remember { mutableStateOf(listOf<String>()) }
-                NavHost(navController = nav, startDestination = "onboarding") {
+                val prefs = remember { getSharedPreferences("nexguard_prefs", MODE_PRIVATE) }
+                val start = remember {
+                    if (prefs.getBoolean("onboarding_done", false)) "home" else "onboarding"
+                }
+                fun back() {
+                    if (!nav.popBackStack()) nav.navigate("home")
+                }
+
+                NavHost(navController = nav, startDestination = start) {
                     composable("onboarding") {
                         OnboardingScreen(
-                            onFinished = { nav.navigate("home") { popUpTo("onboarding") { inclusive = true } } },
+                            onFinished = {
+                                prefs.edit().putBoolean("onboarding_done", true).apply()
+                                nav.navigate("home") { popUpTo("onboarding") { inclusive = true } }
+                            },
                             adminReceiver = ComponentName(this@MainActivity, DeviceAdminReceiver::class.java),
                             context = this@MainActivity
                         )
                     }
                     composable("home") {
-                        HomeScreen(
+                        HomeRoute(
                             onScan = { nav.navigate("scan") },
                             onNavigate = { route -> nav.navigate(route) }
                         )
                     }
-                    composable("scan") {
-                        LaunchedEffect(Unit) {
-                            val r = scanner.get().scanDirectory("/storage/emulated/0/Download")
-                            logLines = r.map { "${it.targetPath} -> ${it.verdict} (${it.score})" }
-                            nav.popBackStack()
-                        }
-                    }
-                    composable("quarantine") {
-                        PlaceholderScreen(title = "Karantina", body = "Karantinalı dosyalar buraya listelenecek.")
-                    }
-                    composable("settings") { LogScreen(lines = logLines) }
-                    composable("history") { LogScreen(lines = logLines) }
-                    composable("wifi") {
-                        PlaceholderScreen(title = "Wi-Fi Tarama", body = "Ağ güvenliği taraması burada gösterilecek.")
-                    }
-                    composable("apps") {
-                        PlaceholderScreen(title = "Uygulamalar", body = "Yüklü uygulama analizi burada gösterilecek.")
-                    }
-                    composable("device") {
-                        PlaceholderScreen(title = "Cihaz Güvenliği", body = "Cihaz ayarları ve yönetici durumu burada gösterilecek.")
-                    }
-                    composable("sites") {
-                        PlaceholderScreen(title = "Siteler", body = "Engellenen/güvenli site listesi burada gösterilecek.")
-                    }
+                    composable("scan") { ScanRoute(onBack = { back() }) }
+                    composable("quarantine") { QuarantineRoute(onBack = { back() }) }
+                    composable("history") { HistoryRoute(onBack = { back() }) }
+                    composable("settings") { SettingsRoute(onBack = { back() }) }
+                    composable("wifi") { WifiRoute(onBack = { back() }) }
+                    composable("apps") { AppsRoute(onBack = { back() }) }
+                    composable("device") { DeviceRoute(onBack = { back() }) }
+                    composable("sites") { SitesRoute(onBack = { back() }) }
                 }
             }
         }

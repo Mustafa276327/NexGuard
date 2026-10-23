@@ -12,6 +12,8 @@ import com.nexguard.core.eventbus.EventBus
 import com.nexguard.core.eventbus.NexEvent
 import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.security.MessageDigest
@@ -71,13 +73,27 @@ class ScanOrchestrator(
         result
     }
 
-    suspend fun scanDirectory(root: String, onProgress: (Int, Int) -> Unit = { _, _ -> }): List<ScanResult> = withContext(Dispatchers.IO) {
-        val files = File(root).walkTopDown().filter { it.isFile }.toList()
+    suspend fun scanDirectory(
+        root: String,
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+        onFileStart: (String) -> Unit = {},
+        onFileDone: (ScanResult) -> Unit = {}
+    ): List<ScanResult> = withContext(Dispatchers.IO) {
+        val files = try {
+            File(root).walkTopDown().filter { it.isFile }.toList()
+        } catch (e: Exception) {
+            emptyList()
+        }
         val out = mutableListOf<ScanResult>()
         files.forEachIndexed { i, f ->
-            out += scanFile(f.absolutePath)
+            // Durdur butonu: iptal edildiğinde döngüyü hemen kes
+            currentCoroutineContext().ensureActive()
+            onFileStart(f.absolutePath)
+            val r = scanFile(f.absolutePath)
+            out += r
+            onFileDone(r)
             onProgress(i + 1, files.size)
-            bus.tryEmit(NexEvent.ScanProgress(i + 1, out.count { it.verdict != com.nexguard.core.common.Verdict.CLEAN }))
+            bus.tryEmit(NexEvent.ScanProgress(i + 1, out.count { it.verdict != Verdict.CLEAN }))
         }
         out
     }
