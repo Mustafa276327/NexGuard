@@ -24,12 +24,18 @@ object DatabaseProvider {
     }
 
     private fun getOrCreatePassphrase(context: Context): ByteArray {
-        val prefs = context.getSharedPreferences("ng_db", Context.MODE_PRIVATE)
+        val masterKey = androidx.security.crypto.MasterKey.Builder(context)
+            .setKeyScheme(androidx.security.crypto.MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        val prefs = androidx.security.crypto.EncryptedSharedPreferences.create(
+            context, "ng_db", masterKey,
+            androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
         val existing = prefs.getString("pp", null)
         if (existing != null) return android.util.Base64.decode(existing, android.util.Base64.NO_WRAP)
         val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
         prefs.edit().putString("pp", android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)).apply()
-        // NOTE: in production, wrap this passphrase with Keystore; MVP keeps it in encrypted prefs (TODO).
         return bytes
     }
 }

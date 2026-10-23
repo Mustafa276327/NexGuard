@@ -17,7 +17,7 @@ class QuarantineManager @Inject constructor(private val context: Context, privat
         val src = File(originalPath)
         val id = UUID.randomUUID().toString()
         val dst = File(dir, id)
-        if (src.exists()) src.renameTo(dst)
+        if (src.exists()) copyFile(src, dst) && src.delete()
         db.quarantineDao().insert(QuarantineEntity(id, originalPath, dst.name, sha256(dst), reason, System.currentTimeMillis()))
         return id
     }
@@ -27,7 +27,7 @@ class QuarantineManager @Inject constructor(private val context: Context, privat
         val src = File(dir, e.storedName)
         val dst = File(e.originalPath)
         dst.parentFile?.mkdirs()
-        val ok = src.renameTo(dst)
+        val ok = copyFile(src, dst) && src.delete()
         if (ok) db.quarantineDao().delete(id)
         return ok
     }
@@ -38,6 +38,11 @@ class QuarantineManager @Inject constructor(private val context: Context, privat
         db.quarantineDao().delete(id)
         return true
     }
+
+    private fun copyFile(src: File, dst: File): Boolean = try {
+        src.inputStream().use { ins -> dst.outputStream().use { outs -> ins.copyTo(outs) } }
+        true
+    } catch (e: Exception) { false }
 
     private fun sha256(f: File): String = try {
         val md = java.security.MessageDigest.getInstance("SHA-256")

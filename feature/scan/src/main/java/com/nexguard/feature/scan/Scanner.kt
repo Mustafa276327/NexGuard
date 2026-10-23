@@ -22,6 +22,7 @@ class Scanner @Inject constructor(private val db: AppDatabase, private val bus: 
     private val eicar = "X5O!P%@AP[4\\PZX54(P^)7CC)7}\$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!\$H+H*"
 
     suspend fun scanFile(path: String): ScanResult = withContext(Dispatchers.IO) {
+        val start = System.currentTimeMillis()
         val f = File(path)
         val sha = sha256(f)
         val findings = mutableListOf<Finding>()
@@ -46,7 +47,7 @@ class Scanner @Inject constructor(private val db: AppDatabase, private val bus: 
         }
         // enforce 2-signal rule for dangerous
         val finalVerdict = if (verdict == Verdict.DANGEROUS && findings.map { it.detector }.distinct().size < 2) Verdict.SUSPICIOUS else verdict
-        val result = ScanResult(targetPath = path, sha256 = sha, verdict = finalVerdict, score = score, startedAt = System.currentTimeMillis(), durationMs = 0, findings = findings)
+        val result = ScanResult(targetPath = path, sha256 = sha, verdict = finalVerdict, score = score.coerceAtMost(100), startedAt = start, durationMs = System.currentTimeMillis() - start, findings = findings)
         persist(result)
         bus.tryEmit(NexEvent.ScanFinished(result))
         result
