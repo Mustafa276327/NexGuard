@@ -98,6 +98,25 @@ class ScanOrchestrator(
         out
     }
 
+    suspend fun scanPaths(
+        paths: List<String>,
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+        onFileStart: (String) -> Unit = {},
+        onFileDone: (ScanResult) -> Unit = {}
+    ): List<ScanResult> = withContext(Dispatchers.IO) {
+        val out = mutableListOf<ScanResult>()
+        paths.forEachIndexed { i, path ->
+            currentCoroutineContext().ensureActive()
+            onFileStart(path)
+            val r = scanFile(path)
+            out += r
+            onFileDone(r)
+            onProgress(i + 1, paths.size)
+            bus.tryEmit(NexEvent.ScanProgress(i + 1, out.count { it.verdict != Verdict.CLEAN }))
+        }
+        out
+    }
+
     private fun computeScore(findings: List<Finding>): Int {
         val byDetector = findings.groupBy { it.detector }
         var total = 0
@@ -135,10 +154,20 @@ class ScanOrchestrator(
 
     private fun sha256(f: File): String = try {
         val md = MessageDigest.getInstance("SHA-256")
+        // Performans: çok büyük dosyalarda yalnızca ilk 64 MB hash'lenir
+        val maxBytes = 64L * 1024 * 1024
+        var total = 0L
         f.inputStream().use { ins ->
-            val buf = ByteArray(8192); var n: Int
-            while (ins.read(buf).also { n = it } > 0) md.update(buf, 0, n)
+            val buf = ByteArray(8192)
+            while (total < maxBytes) {
+                val n = ins.read(buf)
+                if (n <= 0) break
+                val take = minOf(n.toLong(), maxBytes - total).toInt()
+                md.update(buf, 0, take)
+                total += take
+            }
         }
-        md.digest().joinToString("") { "%02x".format(it) }
+        val digest = md.digest().joinToString("") { "%02x".format(it) }
+        if (f.length() > maxBytes) "$digest-$total" else digest
     } catch (e: Exception) { "" }
 }

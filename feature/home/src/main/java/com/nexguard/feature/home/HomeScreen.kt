@@ -1,10 +1,12 @@
 package com.nexguard.feature.home
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
@@ -16,51 +18,91 @@ fun HomeScreen(
     onScan: () -> Unit = {},
     onNavigate: (String) -> Unit = {}
 ) {
+    val gradient = Brush.linearGradient(
+        colors = listOf(
+            MaterialTheme.colorScheme.primary,
+            MaterialTheme.colorScheme.secondary
+        )
+    )
+    val onHero = MaterialTheme.colorScheme.onPrimary
+
     Column(
         Modifier.fillMaxSize().padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Spacer(Modifier.height(20.dp))
-        Text("NexGuard", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-        Text("Güvenlik merkezi", style = MaterialTheme.typography.bodyMedium)
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(12.dp))
 
+        // Hero kart
         Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp)) {
-                Text("Güvenlik durumu", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(8.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Skor", style = MaterialTheme.typography.bodyMedium)
+            Column(
+                Modifier.fillMaxWidth().background(gradient).padding(20.dp)
+            ) {
+                Text(
+                    "NexGuard",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = onHero,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    "Güvenlik merkezi",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = onHero.copy(alpha = 0.85f)
+                )
+                Spacer(Modifier.height(18.dp))
+                Row(verticalAlignment = Alignment.Bottom) {
                     Text(
-                        "$score / 100",
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = if (score >= 70) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                        "$score",
+                        style = MaterialTheme.typography.headlineLarge,
+                        color = onHero,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        " / 100",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = onHero.copy(alpha = 0.85f),
+                        modifier = Modifier.padding(bottom = 4.dp)
                     )
                 }
+                Text(
+                    "Güvenlik skoru",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = onHero.copy(alpha = 0.85f)
+                )
+                Spacer(Modifier.height(10.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Son tarama", style = MaterialTheme.typography.bodyMedium)
-                    Text(lastScan, style = MaterialTheme.typography.bodyMedium)
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Tehdit kaydı", style = MaterialTheme.typography.bodyMedium)
                     Text(
-                        if (threats == 0) "Yok" else "$threats",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = if (threats == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                        "Son tarama: $lastScan",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = onHero.copy(alpha = 0.85f)
+                    )
+                    Text(
+                        if (threats == 0) "Tehdit yok" else "$threats tehdit",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = onHero,
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
         }
 
         Spacer(Modifier.height(20.dp))
+
         Button(
             onClick = onScan,
             modifier = Modifier.size(150.dp),
-            shape = MaterialTheme.shapes.extraLarge
+            shape = MaterialTheme.shapes.extraLarge,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary
+            ),
+            elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp)
         ) {
-            Text("TARA", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("TARA", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text("tüm cihaz", style = MaterialTheme.typography.bodySmall)
+            }
         }
+
         Spacer(Modifier.height(20.dp))
 
         val actions = listOf(
@@ -76,9 +118,9 @@ fun HomeScreen(
         actions.chunked(2).forEach { row ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 row.forEach { (label, route) ->
-                    OutlinedButton(
+                    FilledTonalButton(
                         onClick = { onNavigate(route) },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f).height(48.dp)
                     ) { Text(label) }
                 }
             }

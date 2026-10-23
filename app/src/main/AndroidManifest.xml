@@ -27,11 +27,13 @@
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />
 
     <application
         android:name=".NexGuardApp"
         android:allowBackup="false"
         android:label="NexGuard"
+        android:requestLegacyExternalStorage="true"
         android:theme="@style/Theme.NexGuard"
         android:usesCleartextTraffic="false"
         android:networkSecurityConfig="@xml/network_security_config">
