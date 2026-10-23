@@ -23,11 +23,18 @@ class ScanOrchestrator(
     private val cloudEnabled: Boolean = false
 ) {
     suspend fun scanFile(path: String): ScanResult = withContext(Dispatchers.IO) {
+        bus.tryEmit(NexEvent.ScanStarted(path))
         val start = System.currentTimeMillis()
         val f = File(path)
+        if (!f.exists()) {
+            val result = ScanResult(targetPath = path, sha256 = "", verdict = Verdict.CLEAN, score = 0,
+                startedAt = start, durationMs = 0, findings = emptyList())
+            bus.tryEmit(NexEvent.ScanFinished(result))
+            return@withContext result
+        }
         val sha = sha256(f)
-        val size = if (f.exists()) f.length() else 0L
-        val mtime = if (f.exists()) f.lastModified() else 0L
+        val size = f.length()
+        val mtime = f.lastModified()
         val head = try { f.inputStream().use { it.readNBytes(64) } } catch (e: Exception) { byteArrayOf() }
         val magic = head.copyOf(minOf(4, head.size))
         val target = ScanTarget(path, f, sha, size, mtime, magic, head)
@@ -38,7 +45,7 @@ class ScanOrchestrator(
             try {
                 val res = d.inspect(target)
                 allFindings += res
-                // early stop: if two independent critical signals already present
+                // early stop: two independent critical signals -> DANGEROUS already
                 val distinctCritical = allFindings.filter { it.severity == Severity.CRITICAL }.map { it.detector }.toSet()
                 if (distinctCritical.size >= 2) break
             } catch (e: Exception) {
@@ -52,6 +59,12 @@ class ScanOrchestrator(
             targetPath = path, sha256 = sha, verdict = verdict, score = score,
             startedAt = start, durationMs = System.currentTimeMillis() - start, findings = allFindings
         )
+
+        // Threat event for UI popup
+        if (verdict != Verdict.CLEAN) {
+            bus.tryEmit(NexEvent.ThreatDetected(path, verdict, score))
+        }
+
         persist(result)
         bus.tryEmit(NexEvent.ScanFinished(result))
         result
@@ -69,11 +82,9 @@ class ScanOrchestrator(
     }
 
     private fun score(findings: List<Finding>): Int {
-        // weighted sum with diminishing returns per detector
         val byDetector = findings.groupBy { it.detector }
         var total = 0
         byDetector.forEach { (_, fs) ->
-            // take max weight + half of rest
             val sorted = fs.map { it.weight }.sortedDescending()
             total += (sorted.firstOrNull() ?: 0) + sorted.drop(1).sum() / 2
         }
@@ -91,11 +102,18 @@ class ScanOrchestrator(
     }
 
     private suspend fun persist(r: ScanResult) {
-        db.scanResultDao().insert(ScanResultEntity(r.id, r.targetPath, r.sha256, r.verdict.name, r.score, r.startedAt, r.durationMs))
-        r.findings.forEach { f ->
-            db.findingDao().insert(FindingEntity(f.id, r.id, f.detector, f.ruleId, f.severity.name, f.weight, f.evidence.toString()))
+        db.runInTransaction {
+            db.scanResultDao().insert(ScanResultEntity(r.id, r.targetPath, r.sha256, r.verdict.name, r.score, r.startedAt, r.durationMs))
+            r.findings.forEach { f ->
+                db.findingDao().insert(FindingEntity(f.id, r.id, f.detector, f.ruleId, f.severity.name, f.weight, toJson(f.evidence)))
+            }
+            db.timelineDao().insert(TimelineEntity(UUID.randomUUID().toString(), System.currentTimeMillis(), "scan", "scan_finished", "${r.targetPath} -> ${r.verdict}"))
         }
-        db.timelineDao().insert(TimelineEntity(UUID.randomUUID().toString(), System.currentTimeMillis(), "scan", "scan_finished", "${r.targetPath} -> ${r.verdict}"))
+    }
+
+    private fun toJson(map: Map<String, String>): String {
+        if (map.isEmpty()) return "{}"
+        return "{" + map.entries.joinToString(",") { "\"${it.key.replace("\\", "\\\\").replace("\"", "\\\"")}\":\"${it.value.replace("\\", "\\\\").replace("\"", "\\\"")}\"" } + "}"
     }
 
     private fun sha256(f: File): String = try {

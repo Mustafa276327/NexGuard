@@ -5,20 +5,22 @@ import com.nexguard.core.common.Severity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 
 class CloudVerifier(
     private val vtApiKey: String? = null,
-    private val mbEnabled: Boolean = true
+    private val mbEnabled: Boolean = true,
+    private val timeoutMs: Int = 10000
 ) {
     private val cache = ConcurrentHashMap<String, List<Finding>>()
     private val lastCall = ConcurrentHashMap<String, Long>()
 
     suspend fun check(hash: String): List<Finding> = withContext(Dispatchers.IO) {
         cache[hash]?.let { return@withContext it }
-        // rate limit: min 15s between calls per provider
+        // rate limit: min 15s between calls per provider (global, anti-abuse)
         val now = System.currentTimeMillis()
         if (now - (lastCall["mb"] ?: 0L) < 15000) return@withContext emptyList()
         lastCall["mb"] = now
@@ -29,8 +31,12 @@ class CloudVerifier(
                 val conn = URL("https://mb-api.abuse.ch/api/v1/").openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.doOutput = true
+                conn.connectTimeout = timeoutMs
+                conn.readTimeout = timeoutMs
                 conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-                conn.outputStream.use { it.write("query=get_info&hash=$hash".toByteArray()) }
+                conn.outputStream.use { outStream: OutputStream ->
+                    outStream.write("query=get_info&hash=$hash".toByteArray())
+                }
                 val text = conn.inputStream.bufferedReader().readText()
                 val json = JSONObject(text)
                 if (json.optString("query_status") == "ok") {
@@ -48,6 +54,8 @@ class CloudVerifier(
         if (!vtApiKey.isNullOrBlank()) {
             try {
                 val conn = URL("https://www.virustotal.com/api/v3/files/$hash").openConnection() as HttpURLConnection
+                conn.connectTimeout = timeoutMs
+                conn.readTimeout = timeoutMs
                 conn.setRequestProperty("x-apikey", vtApiKey)
                 if (conn.responseCode == 200) {
                     val text = conn.inputStream.bufferedReader().readText()

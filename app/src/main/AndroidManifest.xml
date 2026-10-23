@@ -33,7 +33,8 @@
         android:allowBackup="false"
         android:label="NexGuard"
         android:theme="@android:style/Theme.Material.NoActionBar"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="false"
+        android:networkSecurityConfig="@xml/network_security_config">
 
         <activity
             android:name=".MainActivity"
@@ -48,7 +49,8 @@
         <service
             android:name=".service.MonitorService"
             android:foregroundServiceType="dataSync"
-            android:exported="false" />
+            android:exported="false"
+            android:stopWithTask="false" />
 
         <receiver
             android:name=".receiver.BootReceiver"

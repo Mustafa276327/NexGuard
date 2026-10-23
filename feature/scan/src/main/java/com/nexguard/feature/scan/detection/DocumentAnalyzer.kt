@@ -12,8 +12,8 @@ class DocumentAnalyzer : Detector {
         val out = mutableListOf<Finding>()
         val f = target.file
         val ext = f.extension.lowercase()
-        val bytes = try { f.readBytes().take(4 * 1024 * 1024) } catch (e: Exception) { return emptyList() }
-        val text = String(bytes.toByteArray(), Charsets.ISO_8859_1)
+        val bytes = try { f.inputStream().use { it.readNBytes(4 * 1024 * 1024) } } catch (e: Exception) { return emptyList() }
+        val text = String(bytes, Charsets.ISO_8859_1)
         // Polyglot: file starts as one type but contains another magic
         val magics = listOf(0x504B0304, 0x25504446, 0xD0CF11E0.toInt(), 0x7F454C46)
         val foundMagics = magics.count { m ->

@@ -28,7 +28,6 @@ class ApkAnalyzer : Detector {
         val maxEntries = 4096
         val maxTotalUncompressed = 200L * 1024 * 1024
         var totalUncompressed = 0L
-        var entryCount = 0
         val embeddedUrls = mutableSetOf<String>()
         val embeddedIps = mutableSetOf<String>()
         var hasDynamicCode = false
@@ -37,12 +36,15 @@ class ApkAnalyzer : Detector {
         val permissions = mutableListOf<String>()
         try {
             ZipFile(target.file).use { zf ->
-                val entries = zf.entries().toList()
-                if (entries.size > maxEntries) {
-                    out += Finding(detector = name, ruleId = "ZIP_TOO_MANY_ENTRIES", severity = Severity.MEDIUM, weight = 20)
-                }
-                for (e in entries) {
-                    if (entryCount++ > maxEntries) break
+                val enumeration = zf.entries()
+                var entryCountChecked = 0
+                while (enumeration.hasMoreElements()) {
+                    val e = enumeration.nextElement()
+                    entryCountChecked++
+                    if (entryCountChecked > maxEntries) {
+                        out += Finding(detector = name, ruleId = "ZIP_TOO_MANY_ENTRIES", severity = Severity.MEDIUM, weight = 20)
+                        break
+                    }
                     // zip slip protection
                     if (e.name.contains("..") || e.name.startsWith("/")) continue
                     totalUncompressed += e.size
