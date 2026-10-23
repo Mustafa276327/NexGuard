@@ -102,7 +102,7 @@ class ScanOrchestrator(
     }
 
     private suspend fun persist(r: ScanResult) {
-        db.runInTransaction {
+        androidx.room.withTransaction(db) {
             db.scanResultDao().insert(ScanResultEntity(r.id, r.targetPath, r.sha256, r.verdict.name, r.score, r.startedAt, r.durationMs))
             r.findings.forEach { f ->
                 db.findingDao().insert(FindingEntity(f.id, r.id, f.detector, f.ruleId, f.severity.name, f.weight, toJson(f.evidence)))

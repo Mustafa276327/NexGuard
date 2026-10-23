@@ -12,6 +12,7 @@ android {
 dependencies {
     implementation(project(":core:common"))
     implementation(project(":core:eventbus"))
+    implementation(project(":feature:scan"))
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")

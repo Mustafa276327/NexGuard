@@ -54,7 +54,7 @@ class DownloadMonitor @Inject constructor(
     }
 
     private fun scheduleStabilityCheck(path: String) {
-        scope.launch(checkJob + scope.coroutineContext) {
+        scope.launch(checkJob) {
             var lastSize: Long = -1
             var stableCount = 0
             val start = System.currentTimeMillis()

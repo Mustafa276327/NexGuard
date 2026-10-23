@@ -61,7 +61,7 @@ class QuarantineManager @Inject constructor(private val context: Context, privat
                 var written = 0L
                 while (written < len) {
                     val n = (minOf(buf.size.toLong(), len - written)).toInt()
-                    random.nextBytes(buf, 0, n)
+                    random.nextBytes(buf)
                     fos.write(buf, 0, n)
                     written += n
                 }
