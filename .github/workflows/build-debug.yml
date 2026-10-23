@@ -26,7 +26,7 @@ jobs:
         with:
           gradle-version: '8.7'
       - name: Debug APK oluştur
-        run: gradle :app:assembleDebug --no-daemon --stacktrace
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
       - name: APK yolunu göster
         run: ls -la app/build/outputs/apk/debug/
       - uses: actions/upload-artifact@v4
