@@ -1,0 +1,9 @@
+.gradle/
+build/
+*/build/
+*.apk
+*.aab
+local.properties
+.idea/
+.DS_Store
+# keystore committed for reproducible signing (personal use)

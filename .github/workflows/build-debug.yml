@@ -1,0 +1,36 @@
+name: NexGuard Debug APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dosya yapısını kontrol et
+        run: |
+          test -f settings.gradle.kts || exit 1
+          test -f app/build.gradle.kts || exit 1
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Android SDK lisanslarını kabul et
+        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
+      - name: Gerekli SDK paketlerini kur
+        run: $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools" || $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+      - name: Debug APK oluştur
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
+      - name: APK yolunu göster
+        run: ls -la app/build/outputs/apk/debug/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NexGuard-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
