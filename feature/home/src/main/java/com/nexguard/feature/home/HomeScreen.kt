@@ -39,3 +39,12 @@ fun HomeScreen(
         }
     }
 }
+
+@Composable
+fun PlaceholderScreen(title: String, body: String) {
+    Column(Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Text(title, style = MaterialTheme.typography.headlineMedium)
+        Spacer(Modifier.height(16.dp))
+        Text(body, style = MaterialTheme.typography.bodyMedium)
+    }
+}

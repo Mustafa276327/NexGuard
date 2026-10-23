@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ng_surface">#FFFFFF</color>
+    <color name="ng_on_surface">#000000</color>
+    <color name="ng_primary">#1A237E</color>
+    <color name="ng_on_primary">#FFFFFF</color>
+    <color name="ng_error">#B00020</color>
+    <color name="ng_on_error">#FFFFFF</color>
+</resources>
