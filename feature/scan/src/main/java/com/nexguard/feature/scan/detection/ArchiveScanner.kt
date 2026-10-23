@@ -3,6 +3,7 @@ package com.nexguard.feature.scan.detection
 import com.nexguard.core.common.Finding
 import com.nexguard.core.common.Severity
 import java.io.File
+import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 
 class ArchiveScanner(private val maxDepth: Int = 3, private val maxEntries: Int = 4096, private val maxTotalBytes: Long = 300L * 1024 * 1024) : Detector {

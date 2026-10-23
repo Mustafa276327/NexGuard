@@ -10,6 +10,7 @@ import com.nexguard.core.database.ScanResultEntity
 import com.nexguard.core.database.TimelineEntity
 import com.nexguard.core.eventbus.EventBus
 import com.nexguard.core.eventbus.NexEvent
+import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -35,7 +36,7 @@ class ScanOrchestrator(
         val sha = sha256(f)
         val size = f.length()
         val mtime = f.lastModified()
-        val head = try { f.inputStream().use { it.readNBytes(64) } } catch (e: Exception) { byteArrayOf() }
+        val head = try { f.readHead(64) } catch (e: Exception) { byteArrayOf() }
         val magic = head.copyOf(minOf(4, head.size))
         val target = ScanTarget(path, f, sha, size, mtime, magic, head)
 
@@ -53,8 +54,8 @@ class ScanOrchestrator(
             }
         }
 
-        val score = score(allFindings).coerceAtMost(100)
-        val verdict = verdict(score, allFindings)
+        val score = computeScore(allFindings).coerceAtMost(100)
+        val verdict = computeVerdict(score, allFindings)
         val result = ScanResult(
             targetPath = path, sha256 = sha, verdict = verdict, score = score,
             startedAt = start, durationMs = System.currentTimeMillis() - start, findings = allFindings
@@ -81,7 +82,7 @@ class ScanOrchestrator(
         out
     }
 
-    private fun score(findings: List<Finding>): Int {
+    private fun computeScore(findings: List<Finding>): Int {
         val byDetector = findings.groupBy { it.detector }
         var total = 0
         byDetector.forEach { (_, fs) ->
@@ -91,7 +92,7 @@ class ScanOrchestrator(
         return total
     }
 
-    private fun verdict(score: Int, findings: List<Finding>): Verdict {
+    private fun computeVerdict(score: Int, findings: List<Finding>): Verdict {
         val distinctDetectors = findings.map { it.detector }.distinct().size
         val hasCritical = findings.any { it.severity == Severity.CRITICAL }
         return when {
@@ -102,7 +103,7 @@ class ScanOrchestrator(
     }
 
     private suspend fun persist(r: ScanResult) {
-        androidx.room.withTransaction(db) {
+        db.withTransaction {
             db.scanResultDao().insert(ScanResultEntity(r.id, r.targetPath, r.sha256, r.verdict.name, r.score, r.startedAt, r.durationMs))
             r.findings.forEach { f ->
                 db.findingDao().insert(FindingEntity(f.id, r.id, f.detector, f.ruleId, f.severity.name, f.weight, toJson(f.evidence)))

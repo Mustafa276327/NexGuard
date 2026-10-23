@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.nexguard.core.common"
-    compileSdk = 36
+    compileSdk = 35
     defaultConfig { minSdk = 29 }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }

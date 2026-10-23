@@ -6,7 +6,7 @@ import java.io.File
 
 object SimHash {
     fun compute(file: File, sampleSize: Int = 65536): Long {
-        val bytes = try { file.inputStream().use { it.readNBytes(sampleSize) } } catch (e: Exception) { return 0L }
+        val bytes = try { file.readHead(sampleSize) } catch (e: Exception) { return 0L }
         val v = LongArray(64)
         var i = 0
         while (i + 8 <= bytes.size) {

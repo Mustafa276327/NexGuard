@@ -13,7 +13,9 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class AlertManager @Inject constructor(private val context: Context) {
+class AlertManager @Inject constructor(
+    @dagger.hilt.android.qualifiers.ApplicationContext private val context: Context
+) {
     private val channelId = "nexguard_threats"
 
     init {

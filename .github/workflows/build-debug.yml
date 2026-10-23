@@ -21,8 +21,10 @@ jobs:
       - name: Android SDK lisanslarını kabul et
         run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
       - name: Gerekli SDK paketlerini kur
-        run: $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools" || $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+        run: $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
       - uses: gradle/actions/setup-gradle@v4
+      - name: gradlew izni ver
+        run: chmod +x gradlew
       - name: Debug APK oluştur
         run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
       - name: APK yolunu göster

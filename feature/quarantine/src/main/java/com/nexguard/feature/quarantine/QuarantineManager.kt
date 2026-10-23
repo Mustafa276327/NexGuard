@@ -7,12 +7,14 @@ import java.io.File
 import java.io.FileOutputStream
 import java.security.SecureRandom
 import java.util.UUID
-import kotlin.math.min
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class QuarantineManager @Inject constructor(private val context: Context, private val db: AppDatabase) {
+class QuarantineManager @Inject constructor(
+    @dagger.hilt.android.qualifiers.ApplicationContext private val context: Context,
+    private val db: AppDatabase
+) {
     private val dir = File(context.filesDir, "quarantine").apply { mkdirs() }
     private val random = SecureRandom()
 

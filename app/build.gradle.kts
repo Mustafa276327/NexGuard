@@ -8,11 +8,11 @@ plugins {
 
 android {
     namespace = "com.nexguard.app"
-    compileSdk = 36
+    compileSdk = 35
     defaultConfig {
         applicationId = "com.nexguard.app"
         minSdk = 29
-        targetSdk = 36
+        targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
     }
@@ -22,6 +22,7 @@ android {
     signingConfigs {
         create("nexguard") {
             storeFile = rootProject.file("keystore/nexguard.jks")
+            storeType = "pkcs12"
             storePassword = "nexguard1234"
             keyAlias = "nexguard"
             keyPassword = "nexguard1234"

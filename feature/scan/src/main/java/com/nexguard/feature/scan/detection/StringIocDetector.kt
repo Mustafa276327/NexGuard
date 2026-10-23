@@ -13,7 +13,7 @@ class StringIocDetector : Detector {
 
     override suspend fun inspect(target: ScanTarget): List<Finding> {
         val out = mutableListOf<Finding>()
-        val bytes = try { target.file.inputStream().use { it.readNBytes(1 * 1024 * 1024) } } catch (e: Exception) { return emptyList() }
+        val bytes = try { target.file.readHead(1 * 1024 * 1024) } catch (e: Exception) { return emptyList() }
         val text = String(bytes, Charsets.ISO_8859_1)
         cmdTokens.forEach { t ->
             if (text.contains(t, ignoreCase = true)) out += Finding(detector = name, ruleId = "SUSPICIOUS_COMMAND", severity = Severity.MEDIUM, weight = 20, evidence = mapOf("token" to t))

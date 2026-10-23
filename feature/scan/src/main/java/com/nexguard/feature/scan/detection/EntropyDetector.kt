@@ -8,7 +8,7 @@ class EntropyDetector : Detector {
     override val name = "entropy"
     override val priority = 55
     override suspend fun inspect(target: ScanTarget): List<Finding> {
-        val bytes = try { target.file.inputStream().use { it.readNBytes(256 * 1024) } } catch (e: Exception) { return emptyList() }
+        val bytes = try { target.file.readHead(256 * 1024) } catch (e: Exception) { return emptyList() }
         if (bytes.isEmpty()) return emptyList()
         val freq = IntArray(256)
         bytes.forEach { freq[it.toInt() and 0xFF]++ }

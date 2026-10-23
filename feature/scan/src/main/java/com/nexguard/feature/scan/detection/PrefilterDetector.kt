@@ -14,7 +14,7 @@ class PrefilterDetector : Detector {
     override suspend fun inspect(target: ScanTarget): List<Finding> {
         val out = mutableListOf<Finding>()
         val name = target.file.name.lowercase()
-        if (target.file.name.contains(rtlo)) out += Finding(detector = name, ruleId = "RTLO", severity = Severity.HIGH, weight = 60, evidence = mapOf("file" to target.file.name))
+        if (target.file.name.contains(rtlo)) out += Finding(detector = this.name, ruleId = "RTLO", severity = Severity.HIGH, weight = 60, evidence = mapOf("file" to target.file.name))
         if (doubleExt.containsMatchIn(name)) out += Finding(detector = this.name, ruleId = "DOUBLE_EXT", severity = Severity.HIGH, weight = 50, evidence = mapOf("file" to target.file.name))
         if (suspiciousNames.any { name.contains(it) } && target.file.extension.lowercase() in setOf("apk", "exe")) {
             out += Finding(detector = this.name, ruleId = "FAKE_NAME", severity = Severity.MEDIUM, weight = 30, evidence = mapOf("file" to target.file.name))
