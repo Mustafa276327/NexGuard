@@ -23,7 +23,7 @@ class DownloadMonitor @Inject constructor(private val bus: EventBus) {
         dirs.forEach { path ->
             val f = File(path)
             if (!f.exists()) return@forEach
-            val obs = object : FileObserver(f, CREATE or MOVED_TO or CLOSE_WRITE) {
+            val obs = object : FileObserver(f, FileObserver.CREATE or FileObserver.MOVED_TO or FileObserver.CLOSE_WRITE) {
                 override fun onEvent(event: Int, path: String?) {
                     if (path == null) return
                     val full = "${f.absolutePath}/$path"

@@ -1,0 +1,109 @@
+package com.nexguard.feature.scan.detection
+
+import com.nexguard.core.common.Finding
+import com.nexguard.core.common.ScanResult
+import com.nexguard.core.common.Severity
+import com.nexguard.core.common.Verdict
+import com.nexguard.core.database.AppDatabase
+import com.nexguard.core.database.FindingEntity
+import com.nexguard.core.database.ScanResultEntity
+import com.nexguard.core.database.TimelineEntity
+import com.nexguard.core.eventbus.EventBus
+import com.nexguard.core.eventbus.NexEvent
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.security.MessageDigest
+import java.util.UUID
+
+class ScanOrchestrator(
+    private val detectors: List<Detector>,
+    private val db: AppDatabase,
+    private val bus: EventBus,
+    private val cloudEnabled: Boolean = false
+) {
+    suspend fun scanFile(path: String): ScanResult = withContext(Dispatchers.IO) {
+        val start = System.currentTimeMillis()
+        val f = File(path)
+        val sha = sha256(f)
+        val size = if (f.exists()) f.length() else 0L
+        val mtime = if (f.exists()) f.lastModified() else 0L
+        val head = try { f.inputStream().use { it.readNBytes(64) } } catch (e: Exception) { byteArrayOf() }
+        val magic = head.copyOf(minOf(4, head.size))
+        val target = ScanTarget(path, f, sha, size, mtime, magic, head)
+
+        val sorted = detectors.sortedByDescending { it.priority }
+        val allFindings = mutableListOf<Finding>()
+        for (d in sorted) {
+            try {
+                val res = d.inspect(target)
+                allFindings += res
+                // early stop: if two independent critical signals already present
+                val distinctCritical = allFindings.filter { it.severity == Severity.CRITICAL }.map { it.detector }.toSet()
+                if (distinctCritical.size >= 2) break
+            } catch (e: Exception) {
+                // detector failure shouldn't abort whole scan
+            }
+        }
+
+        val score = score(allFindings).coerceAtMost(100)
+        val verdict = verdict(score, allFindings)
+        val result = ScanResult(
+            targetPath = path, sha256 = sha, verdict = verdict, score = score,
+            startedAt = start, durationMs = System.currentTimeMillis() - start, findings = allFindings
+        )
+        persist(result)
+        bus.tryEmit(NexEvent.ScanFinished(result))
+        result
+    }
+
+    suspend fun scanDirectory(root: String, onProgress: (Int, Int) -> Unit = { _, _ -> }): List<ScanResult> = withContext(Dispatchers.IO) {
+        val files = File(root).walkTopDown().filter { it.isFile }.toList()
+        val out = mutableListOf<ScanResult>()
+        files.forEachIndexed { i, f ->
+            out += scanFile(f.absolutePath)
+            onProgress(i + 1, files.size)
+            bus.tryEmit(NexEvent.ScanProgress(i + 1, out.count { it.verdict != com.nexguard.core.common.Verdict.CLEAN }))
+        }
+        out
+    }
+
+    private fun score(findings: List<Finding>): Int {
+        // weighted sum with diminishing returns per detector
+        val byDetector = findings.groupBy { it.detector }
+        var total = 0
+        byDetector.forEach { (_, fs) ->
+            // take max weight + half of rest
+            val sorted = fs.map { it.weight }.sortedDescending()
+            total += (sorted.firstOrNull() ?: 0) + sorted.drop(1).sum() / 2
+        }
+        return total
+    }
+
+    private fun verdict(score: Int, findings: List<Finding>): Verdict {
+        val distinctDetectors = findings.map { it.detector }.distinct().size
+        val hasCritical = findings.any { it.severity == Severity.CRITICAL }
+        return when {
+            score >= 70 && hasCritical && distinctDetectors >= 2 -> Verdict.DANGEROUS
+            score >= 30 -> Verdict.SUSPICIOUS
+            else -> Verdict.CLEAN
+        }
+    }
+
+    private suspend fun persist(r: ScanResult) {
+        db.scanResultDao().insert(ScanResultEntity(r.id, r.targetPath, r.sha256, r.verdict.name, r.score, r.startedAt, r.durationMs))
+        r.findings.forEach { f ->
+            db.findingDao().insert(FindingEntity(f.id, r.id, f.detector, f.ruleId, f.severity.name, f.weight, f.evidence.toString()))
+        }
+        db.timelineDao().insert(TimelineEntity(UUID.randomUUID().toString(), System.currentTimeMillis(), "scan", "scan_finished", "${r.targetPath} -> ${r.verdict}"))
+    }
+
+    private fun sha256(f: File): String = try {
+        val md = MessageDigest.getInstance("SHA-256")
+        f.inputStream().use { ins ->
+            val buf = ByteArray(8192); var n: Int
+            while (ins.read(buf).also { n = it } > 0) md.update(buf, 0, n)
+        }
+        md.digest().joinToString("") { "%02x".format(it) }
+    } catch (e: Exception) { "" }
+}
