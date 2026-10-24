@@ -12,6 +12,7 @@ android {
 dependencies {
     implementation(project(":core:common"))
     implementation(project(":core:database"))
+    implementation(project(":core:security"))
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("com.google.dagger:hilt-android:2.52")
 }

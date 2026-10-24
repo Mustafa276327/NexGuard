@@ -2,27 +2,87 @@ package com.nexguard.feature.scan.detection
 
 import com.nexguard.core.common.Finding
 import com.nexguard.core.common.Severity
-import java.io.File
+import java.net.URI
 
 class StringIocDetector : Detector {
     override val name = "ioc"
-    override val priority = 45
-    private val cmdTokens = listOf("cmd.exe", "powershell", "/bin/sh", "wget ", "curl ", "chmod ", "base64 -d", "eval(", "atob(")
-    private val suspiciousTlds = setOf(".ru", ".cn", ".tk", ".top", ".xyz", ".click", ".gq", ".ml")
-    private val urlRegex = Regex("""https?://[A-Za-z0-9.\-_/]+""")
+    override val priority = 40
+
+    private val commandTokens = listOf(
+        "cmd.exe", "powershell", "/bin/sh", "wget ", "curl ", "chmod +x",
+        "base64 -d", "eval(", "atob(", "nc -e", "/dev/tcp/", "certutil -decode",
+        "bitsadmin", "mshta ", "regsvr32 "
+    )
+    private val suspiciousTlds = setOf(
+        ".ru", ".cn", ".tk", ".top", ".xyz", ".click", ".gq", ".ml", ".cf", ".ga",
+        ".work", ".support", ".country", ".stream", ".download", ".loan"
+    )
+    private val urlRegex = Regex("""https?://[^\s"'<>\\]+""", RegexOption.IGNORE_CASE)
+    private val eicar = "X5O!P%@AP[4\\PZX54(P^)7CC)7}\$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!\$H+H*"
 
     override suspend fun inspect(target: ScanTarget): List<Finding> {
-        val out = mutableListOf<Finding>()
-        val bytes = try { target.file.readHead(1 * 1024 * 1024) } catch (e: Exception) { return emptyList() }
+        if (target.extension in ScanPolicy.mediaExtensions) return emptyList()
+        val bytes = target.sample()
+        if (bytes.isEmpty()) return emptyList()
         val text = String(bytes, Charsets.ISO_8859_1)
-        cmdTokens.forEach { t ->
-            if (text.contains(t, ignoreCase = true)) out += Finding(detector = name, ruleId = "SUSPICIOUS_COMMAND", severity = Severity.MEDIUM, weight = 20, evidence = mapOf("token" to t))
+        val out = mutableListOf<Finding>()
+
+        if (text.contains(eicar)) {
+            out += Finding(
+                detector = name, ruleId = "EICAR_TEST", severity = Severity.CRITICAL, weight = 90,
+                evidence = mapOf("source" to "bilinen test imzası")
+            )
         }
-        val urls = urlRegex.findAll(text).map { it.value }.toSet()
+
+        val foundCommands = commandTokens.filter { text.contains(it, ignoreCase = true) }
+        // Kaynak/betik dosyalarda tek bir token (ör. eval) sık görülür; en az iki
+        // güçlü belirti veya betik dışı dosyalar için tek token yeterlidir.
+        val commandThreshold = if (target.extension in ScanPolicy.scriptExtensions) 2 else 1
+        if (foundCommands.size >= commandThreshold) {
+            out += Finding(
+                detector = name,
+                ruleId = "SUSPICIOUS_COMMAND",
+                severity = if (foundCommands.size >= 3) Severity.MEDIUM else Severity.LOW,
+                weight = minOf(45, 12 + foundCommands.size * 8),
+                evidence = mapOf("tokens" to foundCommands.take(8).joinToString(", "), "count" to foundCommands.size.toString())
+            )
+        }
+
+        val urls = urlRegex.findAll(text).map { it.value.trimEnd('.', ',', ')', ';') }.toSet()
+        val riskyHosts = mutableListOf<String>()
+        var ipUrl = false
         urls.forEach { u ->
-            if (suspiciousTlds.any { u.contains(it) }) out += Finding(detector = name, ruleId = "SUSPICIOUS_TLD", severity = Severity.MEDIUM, weight = 15, evidence = mapOf("url" to u))
+            val host = hostOf(u) ?: return@forEach
+            if (suspiciousTlds.any { host.endsWith(it) }) riskyHosts += u.take(160)
+            if (Regex("""\b(?:\d{1,3}\.){3}\d{1,3}\b""").matches(host)) ipUrl = true
         }
-        if (urls.size > 20) out += Finding(detector = name, ruleId = "MANY_URLS", severity = Severity.LOW, weight = 10, evidence = mapOf("count" to urls.size.toString()))
+        if (riskyHosts.isNotEmpty()) {
+            out += Finding(
+                detector = name,
+                ruleId = "SUSPICIOUS_TLD",
+                severity = Severity.MEDIUM,
+                weight = minOf(35, 15 + riskyHosts.size * 5),
+                evidence = mapOf("count" to riskyHosts.size.toString(), "url" to riskyHosts.first())
+            )
+        }
+        if (ipUrl) {
+            out += Finding(
+                detector = name, ruleId = "IP_URL", severity = Severity.MEDIUM, weight = 20,
+                evidence = mapOf("note" to "IP adresli bağlantı")
+            )
+        }
+        if (urls.size > 30) {
+            out += Finding(
+                detector = name, ruleId = "MANY_URLS", severity = Severity.LOW, weight = 15,
+                evidence = mapOf("count" to urls.size.toString())
+            )
+        }
         return out
+    }
+
+    private fun hostOf(url: String): String? = try {
+        URI(url).host?.lowercase()
+    } catch (e: Exception) {
+        Regex("""^https?://([^/:?#]+)""", RegexOption.IGNORE_CASE).find(url)?.groupValues?.getOrNull(1)?.lowercase()
     }
 }

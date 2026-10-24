@@ -3,90 +3,291 @@ package com.nexguard.feature.quarantine
 import android.content.Context
 import com.nexguard.core.database.AppDatabase
 import com.nexguard.core.database.QuarantineEntity
+import com.nexguard.core.security.KeystoreHelper
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.UUID
+import javax.crypto.Cipher
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 import javax.inject.Inject
 import javax.inject.Singleton
 
+data class QuarantineOutcome(
+    val success: Boolean,
+    val id: String? = null,
+    val message: String = ""
+) {
+    /** Karantina kopyası oluştu ancak kaynak dosya silinemedi. */
+    val sourceDeleteFailed: Boolean
+        get() = success && message.contains("silinemedi", ignoreCase = true)
+}
+
+/**
+ * Karantina dizini uygulamanın özel alanındadır. Dosyalar AES-256-GCM ile
+ * parça parça şifrelenir (Android Keystore anahtarı), böylece büyük dosyalar
+ * belleğe tamamen yüklenmez. Kaynak dosya ancak şifreli kopya doğrulandıktan
+ * ve veritabanı kaydı yazıldıktan sonra silinir.
+ */
 @Singleton
 class QuarantineManager @Inject constructor(
-    @dagger.hilt.android.qualifiers.ApplicationContext private val context: Context,
+    @dagger.hilt.android.qualifiers.ApplicationContext context: Context,
     private val db: AppDatabase
 ) {
     private val dir = File(context.filesDir, "quarantine").apply { mkdirs() }
     private val random = SecureRandom()
 
-    suspend fun quarantine(originalPath: String, reason: String): String {
+    suspend fun quarantine(
+        originalPath: String,
+        reason: String,
+        threatType: String = ""
+    ): QuarantineOutcome = withContext(Dispatchers.IO) {
         val src = File(originalPath)
+        if (!src.isFile || !src.canRead()) {
+            return@withContext QuarantineOutcome(false, message = "Dosya okunamadı veya erişim yok")
+        }
+
         val id = UUID.randomUUID().toString()
-        val dst = File(dir, id)
-        if (src.exists()) {
-            copyFile(src, dst)
-            secureDelete(src)
-        }
-        db.quarantineDao().insert(QuarantineEntity(id, originalPath, dst.name, sha256(dst), reason, System.currentTimeMillis()))
-        return id
-    }
-
-    suspend fun restore(id: String): Boolean {
-        val e = db.quarantineDao().all().firstOrNull { it.id == id } ?: return false
-        val src = File(dir, e.storedName)
-        val dst = File(e.originalPath)
-        dst.parentFile?.mkdirs()
-        val ok = copyFile(src, dst) && src.delete()
-        if (ok) db.quarantineDao().delete(id)
-        return ok
-    }
-
-    suspend fun delete(id: String): Boolean {
-        val e = db.quarantineDao().all().firstOrNull { it.id == id } ?: return false
-        File(dir, e.storedName).let { secureDelete(it); it.delete() }
-        db.quarantineDao().delete(id)
-        return true
-    }
-
-    private fun copyFile(src: File, dst: File): Boolean = try {
-        src.inputStream().use { ins -> dst.outputStream().use { outs -> ins.copyTo(outs) } }
-        true
-    } catch (e: Exception) { false }
-
-    /** Dosyayı rastgele veriyle (geçiş 1) ve sıfırlarla (geçiş 2) üzerine yazar, sonra siler. */
-    private fun secureDelete(f: File) {
-        if (!f.exists()) return
-        val len = f.length()
-        val buf = ByteArray(8192)
+        val dst = File(dir, "$id.ngq")
+        val tmp = File(dir, "$id.part")
         try {
-            // Geçiş 1: rastgele baytlar
-            FileOutputStream(f).use { fos ->
-                var written = 0L
-                while (written < len) {
-                    val n = (minOf(buf.size.toLong(), len - written)).toInt()
-                    random.nextBytes(buf)
-                    fos.write(buf, 0, n)
-                    written += n
-                }
+            val key = KeystoreHelper.getOrCreateSecretKey()
+            val originalSize = src.length()
+            val sha = encryptFile(src, tmp, key)
+            if (src.length() != originalSize) {
+                tmp.delete()
+                return@withContext QuarantineOutcome(false, message = "Dosya işlem sırasında değişti; kaynak korundu")
             }
-            // Geçiş 2: sıfırlar
-            for (i in buf.indices) buf[i] = 0
-            FileOutputStream(f).use { fos ->
-                var written = 0L
-                while (written < len) {
-                    val n = (minOf(buf.size.toLong(), len - written)).toInt()
-                    fos.write(buf, 0, n)
-                    written += n
-                }
+            if (!tmp.renameTo(dst)) {
+                tmp.copyTo(dst, overwrite = true)
+                tmp.delete()
             }
-        } catch (e: Exception) { /* best effort */ } finally {
-            for (i in buf.indices) buf[i] = 0
-            f.delete()
+            if (!dst.isFile || dst.length() <= HEADER_SIZE) {
+                dst.delete()
+                return@withContext QuarantineOutcome(false, message = "Şifreli kopya oluşturulamadı")
+            }
+
+            try {
+                db.quarantineDao().insert(
+                    QuarantineEntity(
+                        id = id,
+                        originalPath = originalPath,
+                        storedName = dst.name,
+                        sha256 = sha,
+                        reason = reason,
+                        createdAt = System.currentTimeMillis(),
+                        sizeBytes = originalSize,
+                        threatType = threatType,
+                        encrypted = true
+                    )
+                )
+            } catch (e: Exception) {
+                // Kayıt yazılamazsa yetim şifreli dosya bırakma.
+                dst.delete()
+                return@withContext QuarantineOutcome(false, message = "Karantina kaydı oluşturulamadı")
+            }
+
+            val deleted = secureDelete(src)
+            QuarantineOutcome(
+                true,
+                id,
+                if (deleted) "Dosya karantinaya alındı" else "Karantinaya alındı; kaynak dosya silinemedi"
+            )
+        } catch (e: Exception) {
+            tmp.delete()
+            dst.delete()
+            QuarantineOutcome(false, message = "Karantinaya alınamadı: ${e.message ?: "bilinmeyen hata"}")
         }
     }
 
-    private fun sha256(f: File): String = try {
-        val md = java.security.MessageDigest.getInstance("SHA-256")
-        f.inputStream().use { ins -> val b = ByteArray(8192); var n: Int; while (ins.read(b).also { n = it } > 0) md.update(b, 0, n) }
-        md.digest().joinToString("") { "%02x".format(it) }
-    } catch (e: Exception) { "" }
+    suspend fun restore(id: String): QuarantineOutcome = withContext(Dispatchers.IO) {
+        val e = try { db.quarantineDao().get(id) } catch (ex: Exception) { null }
+            ?: return@withContext QuarantineOutcome(false, message = "Karantina kaydı bulunamadı")
+        val src = File(dir, e.storedName)
+        if (!src.isFile) {
+            return@withContext QuarantineOutcome(false, message = "Karantina dosyası bulunamadı")
+        }
+        val target = File(e.originalPath)
+        if (target.exists()) {
+            return@withContext QuarantineOutcome(false, message = "Hedefte aynı adla bir dosya var")
+        }
+        val parent = target.parentFile
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            return@withContext QuarantineOutcome(false, message = "Hedef klasör oluşturulamadı")
+        }
+        val tmp = File(parent ?: dir, ".${target.name}.ngrestore-${UUID.randomUUID()}")
+        try {
+            val key = if (e.encrypted) KeystoreHelper.getOrCreateSecretKey() else null
+            val sha = if (e.encrypted) decryptFile(src, tmp, key!!) else copyAndHash(src, tmp)
+            if (e.sha256.isNotBlank() && sha.isNotBlank() && !sha.equals(e.sha256, ignoreCase = true)) {
+                tmp.delete()
+                return@withContext QuarantineOutcome(false, message = "Bütünlük doğrulaması başarısız; dosya karantinada kaldı")
+            }
+            if (!tmp.renameTo(target)) {
+                tmp.copyTo(target, overwrite = false)
+                tmp.delete()
+            }
+            src.delete()
+            try {
+                db.quarantineDao().delete(id)
+            } catch (dbError: Exception) {
+                // Dosya geri yüklendi; kayıt sonradan kullanıcı tarafından silinebilir.
+            }
+            QuarantineOutcome(true, id, "Dosya geri yüklendi")
+        } catch (ex: Exception) {
+            tmp.delete()
+            QuarantineOutcome(false, message = "Geri yüklenemedi: ${ex.message ?: "bozuk kayıt"}")
+        }
+    }
+
+    suspend fun delete(id: String): QuarantineOutcome = withContext(Dispatchers.IO) {
+        val e = try { db.quarantineDao().get(id) } catch (ex: Exception) { null }
+            ?: return@withContext QuarantineOutcome(false, message = "Karantina kaydı bulunamadı")
+        val stored = File(dir, e.storedName)
+        if (stored.exists() && !secureDelete(stored)) {
+            return@withContext QuarantineOutcome(
+                false,
+                message = "Şifreli kopya silinemedi; kayıt korundu"
+            )
+        }
+        return@withContext try {
+            db.quarantineDao().delete(id)
+            QuarantineOutcome(true, id, "Karantina kaydı silindi")
+        } catch (ex: Exception) {
+            QuarantineOutcome(false, message = "Kayıt silinemedi")
+        }
+    }
+
+    /** Tarama ekranındaki "kalıcı sil" eylemi. */
+    suspend fun deleteFile(path: String): Boolean = withContext(Dispatchers.IO) {
+        val f = File(path)
+        if (!f.isFile) return@withContext false
+        secureDelete(f)
+    }
+
+    // ---- Şifreleme ----
+
+    private fun encryptFile(src: File, dst: File, key: SecretKey): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        BufferedInputStream(src.inputStream()).use { ins ->
+            FileOutputStream(dst).use { fos ->
+                val out = DataOutputStream(BufferedOutputStream(fos))
+                out.write(MAGIC)
+                out.writeInt(VERSION)
+                out.writeLong(src.length())
+                out.writeInt(CHUNK_SIZE)
+                val buf = ByteArray(CHUNK_SIZE)
+                while (true) {
+                    val n = ins.read(buf)
+                    if (n <= 0) break
+                    md.update(buf, 0, n)
+                    // Android Keystore AES/GCM anahtarlarında rastgele şifreleme
+                    // varsayılan olarak zorunludur; IV keystore tarafından üretilir.
+                    // Çağıranın sağladığı IV "caller-provided IV not permitted" hatası verir.
+                    val cipher = Cipher.getInstance(TRANSFORMATION)
+                    cipher.init(Cipher.ENCRYPT_MODE, key)
+                    val iv = cipher.iv
+                    val ct = cipher.doFinal(buf, 0, n)
+                    out.writeInt(iv.size)
+                    out.writeInt(ct.size)
+                    out.write(iv)
+                    out.write(ct)
+                }
+                out.flush()
+                fos.fd.sync()
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun decryptFile(src: File, dst: File, key: SecretKey): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        DataInputStream(BufferedInputStream(src.inputStream())).use { ins ->
+            val magic = ByteArray(MAGIC.size)
+            ins.readFully(magic)
+            if (!magic.contentEquals(MAGIC)) throw IllegalStateException("geçersiz karantina başlığı")
+            val version = ins.readInt()
+            if (version != VERSION) throw IllegalStateException("desteklenmeyen sürüm")
+            val plainSize = ins.readLong()
+            ins.readInt() // chunk size
+            BufferedOutputStream(FileOutputStream(dst)).use { out ->
+                var written = 0L
+                while (written < plainSize) {
+                    val ivLen = ins.readInt()
+                    val ctLen = ins.readInt()
+                    if (ivLen !in 1..32 || ctLen !in 1..CHUNK_SIZE + 32) {
+                        throw IllegalStateException("bozuk parça")
+                    }
+                    val iv = ByteArray(ivLen).also { ins.readFully(it) }
+                    val ct = ByteArray(ctLen).also { ins.readFully(it) }
+                    val cipher = Cipher.getInstance(TRANSFORMATION)
+                    cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
+                    val plain = cipher.doFinal(ct)
+                    out.write(plain)
+                    md.update(plain)
+                    written += plain.size
+                }
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun copyAndHash(src: File, dst: File): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        BufferedInputStream(src.inputStream()).use { ins ->
+            BufferedOutputStream(FileOutputStream(dst)).use { out ->
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                    val n = ins.read(buf)
+                    if (n <= 0) break
+                    md.update(buf, 0, n)
+                    out.write(buf, 0, n)
+                }
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Flash depolamada güvenli silme garantili değildir; yine de küçük dosyalar
+     * için üzerine yazma denemesi yapılır. Büyük dosyalarda gereksiz yıpranmayı
+     * önlemek için doğrudan silinir.
+     */
+    private fun secureDelete(f: File): Boolean {
+        if (!f.exists()) return true
+        val len = f.length()
+        if (len in 1..(32L * 1024 * 1024)) {
+            val buf = ByteArray(8192)
+            try {
+                FileOutputStream(f).use { fos ->
+                    var written = 0L
+                    while (written < len) {
+                        val n = minOf(buf.size.toLong(), len - written).toInt()
+                        random.nextBytes(buf)
+                        fos.write(buf, 0, n)
+                        written += n
+                    }
+                    fos.fd.sync()
+                }
+            } catch (e: Exception) { /* best effort */ }
+        }
+        return f.delete()
+    }
+
+    private companion object {
+        val MAGIC = "NGQ1".toByteArray(Charsets.US_ASCII)
+        const val VERSION = 1
+        const val CHUNK_SIZE = 64 * 1024
+        const val IV_SIZE = 12
+        const val HEADER_SIZE = 4 + 4 + 8 + 4
+        const val TRANSFORMATION = "AES/GCM/NoPadding"
+    }
 }

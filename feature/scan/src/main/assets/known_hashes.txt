@@ -1,0 +1,4 @@
+# NexGuard yerel hash imzaları
+# Biçim: satır başına bir SHA-256. # ile başlayan satırlar yorumdur.
+# EICAR standart antivirüs test dosyası (zararsız, 68 bayt):
+275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f

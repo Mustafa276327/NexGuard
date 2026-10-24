@@ -23,7 +23,30 @@ data class ScanResult(
     val score: Int,
     val startedAt: Long,
     val durationMs: Long,
-    val findings: List<Finding> = emptyList()
+    val findings: List<Finding> = emptyList(),
+    val sizeBytes: Long = 0,
+    /** Sonuç, değişmemiş dosya önbelleğinden geldiyse true. */
+    val cached: Boolean = false,
+    /** manual | download | install | app */
+    val source: String = "manual"
+)
+
+data class ScanSession(
+    val id: String = UUID.randomUUID().toString(),
+    val startedAt: Long = System.currentTimeMillis(),
+    val finishedAt: Long? = null,
+    val mode: String = "full",
+    val label: String = "",
+    val filesScanned: Int = 0,
+    val threats: Int = 0,
+    val cachedFiles: Int = 0,
+    val status: String = "running",
+    val score: Int = 100
+)
+
+data class ScanRun(
+    val session: ScanSession,
+    val results: List<ScanResult>
 )
 
 data class TimelineEvent(

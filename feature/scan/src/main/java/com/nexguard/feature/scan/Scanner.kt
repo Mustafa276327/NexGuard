@@ -1,6 +1,8 @@
 package com.nexguard.feature.scan
 
+import android.content.Context
 import com.nexguard.core.common.ScanResult
+import com.nexguard.core.common.ScanSession
 import com.nexguard.core.database.AppDatabase
 import com.nexguard.core.eventbus.EventBus
 import com.nexguard.feature.scan.detection.ApkAnalyzer
@@ -10,41 +12,74 @@ import com.nexguard.feature.scan.detection.CloudVerifier
 import com.nexguard.feature.scan.detection.Detector
 import com.nexguard.feature.scan.detection.DocumentAnalyzer
 import com.nexguard.feature.scan.detection.EntropyDetector
-import com.nexguard.feature.scan.detection.FuzzyHashDetector
 import com.nexguard.feature.scan.detection.HashDatabase
 import com.nexguard.feature.scan.detection.HashDetector
+import com.nexguard.feature.scan.detection.PeAnalyzer
 import com.nexguard.feature.scan.detection.PrefilterDetector
+import com.nexguard.feature.scan.detection.ScanCache
+import com.nexguard.feature.scan.detection.ScanOptions
 import com.nexguard.feature.scan.detection.ScanOrchestrator
+import com.nexguard.feature.scan.detection.ScanPolicy
+import com.nexguard.feature.scan.detection.ScriptAnalyzer
 import com.nexguard.feature.scan.detection.StringIocDetector
+import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class Scanner @Inject constructor(private val db: AppDatabase, private val bus: EventBus) {
+class Scanner @Inject constructor(
+    @ApplicationContext context: Context,
+    private val db: AppDatabase,
+    private val bus: EventBus
+) {
+    private val hashDb = HashDatabase.load(context)
+    private val cache = ScanCache(db)
+
     private val detectors: List<Detector> = listOf(
         PrefilterDetector(),
-        HashDetector(HashDatabase(emptySet())),
-        ApkAnalyzer(),
+        HashDetector(hashDb),
+        ApkAnalyzer(context),
         ArchiveScanner(),
+        PeAnalyzer(),
+        ScriptAnalyzer(),
         DocumentAnalyzer(),
         EntropyDetector(),
         StringIocDetector(),
-        FuzzyHashDetector(emptySet()),
         CloudDetector(CloudVerifier(vtApiKey = null, mbEnabled = true))
     )
-    private val orchestrator = ScanOrchestrator(detectors, db, bus)
 
-    suspend fun scanFile(path: String): ScanResult = orchestrator.scanFile(path)
+    private val orchestrator = ScanOrchestrator(detectors, db, bus, cache)
+
+    val engineVersion: Int get() = ScanPolicy.ENGINE_VERSION
+    val detectorCount: Int get() = detectors.size
+    val signatureCount: Int get() = hashDb.size
+
+    suspend fun scanFile(path: String, options: ScanOptions = ScanOptions(deep = true, useCache = false)): ScanResult =
+        orchestrator.scanFile(path, options)
+
     suspend fun scanPaths(
         paths: List<String>,
+        options: ScanOptions = ScanOptions(),
         onProgress: (Int, Int) -> Unit = { _, _ -> },
         onFileStart: (String) -> Unit = {},
         onFileDone: (ScanResult) -> Unit = {}
-    ): List<ScanResult> = orchestrator.scanPaths(paths, onProgress, onFileStart, onFileDone)
+    ): ScanSession = orchestrator.scanPaths(paths, options, onProgress, onFileStart, onFileDone)
+
     suspend fun scanDirectory(
         root: String,
+        options: ScanOptions = ScanOptions(),
         onProgress: (Int, Int) -> Unit = { _, _ -> },
         onFileStart: (String) -> Unit = {},
         onFileDone: (ScanResult) -> Unit = {}
-    ): List<ScanResult> = orchestrator.scanDirectory(root, onProgress, onFileStart, onFileDone)
+    ): ScanSession {
+        val paths = java.io.File(root).walkTopDown()
+            .onEnter { dir -> !ScanPolicy.shouldSkipDirectory(dir.absolutePath, dir.name) }
+            .filter { it.isFile && !ScanPolicy.shouldSkipFile(it.name) }
+            .map { it.absolutePath }
+            .toList()
+        return scanPaths(paths, options, onProgress, onFileStart, onFileDone)
+    }
+
+    suspend fun cacheCount(): Int = cache.count()
+    suspend fun clearCache() = cache.clear()
 }

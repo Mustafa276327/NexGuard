@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NexGuard</string>
+    <string name="app_tagline">Cihazında sessiz ama güçlü koruma</string>
+    <string name="accessibility_service_description">NexGuard, tarayıcılardaki adres çubuğunu okuyarak ziyaret edilen bağlantıları çevrimdışı risk kurallarıyla denetler. Kişisel veri kaydetmez.</string>
+</resources>

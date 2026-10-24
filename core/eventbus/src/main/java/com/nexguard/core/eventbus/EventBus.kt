@@ -10,7 +10,13 @@ sealed class NexEvent {
     data class ScanProgress(val scanned: Int, val found: Int) : NexEvent()
     data class ScanFinished(val result: com.nexguard.core.common.ScanResult) : NexEvent()
     data class DownloadDetected(val path: String) : NexEvent()
-    data class ThreatDetected(val path: String, val verdict: com.nexguard.core.common.Verdict, val score: Int) : NexEvent()
+    data class ThreatDetected(
+        val path: String,
+        val verdict: com.nexguard.core.common.Verdict,
+        val score: Int,
+        val threatType: String = "",
+        val source: String = "manual"
+    ) : NexEvent()
     data class Timeline(val event: TimelineEvent) : NexEvent()
     data class PermissionChanged(val permission: String, val granted: Boolean) : NexEvent()
     data class ServiceDied(val service: String) : NexEvent()

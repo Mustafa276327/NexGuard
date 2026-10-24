@@ -1,165 +1,400 @@
 package com.nexguard.feature.scan.detection
 
+import androidx.room.withTransaction
 import com.nexguard.core.common.Finding
+import com.nexguard.core.common.RiskScorer
 import com.nexguard.core.common.ScanResult
+import com.nexguard.core.common.ScanSession
 import com.nexguard.core.common.Severity
+import com.nexguard.core.common.ThreatCatalog
 import com.nexguard.core.common.Verdict
 import com.nexguard.core.database.AppDatabase
+import com.nexguard.core.database.FileCacheEntity
 import com.nexguard.core.database.FindingEntity
 import com.nexguard.core.database.ScanResultEntity
+import com.nexguard.core.database.ScanSessionEntity
 import com.nexguard.core.database.TimelineEntity
 import com.nexguard.core.eventbus.EventBus
 import com.nexguard.core.eventbus.NexEvent
-import androidx.room.withTransaction
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicInteger
 import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
+
+data class ScanOptions(
+    /** manual | download | install | app */
+    val source: String = "manual",
+    /** true: önbelleği yok say, tüm içeriği yeniden incele. */
+    val deep: Boolean = false,
+    /** false: değişmemiş temiz dosyalar için önbelleği kullanma. */
+    val useCache: Boolean = true,
+    /** Yalnızca kullanıcı açtıysa: sadece hash'i buluta gönder. */
+    val cloudEnabled: Boolean = false,
+    val mode: String = "full",
+    val label: String = ""
+)
 
 class ScanOrchestrator(
     private val detectors: List<Detector>,
     private val db: AppDatabase,
     private val bus: EventBus,
-    private val cloudEnabled: Boolean = false
+    private val cache: ScanCache = ScanCache(db)
 ) {
-    suspend fun scanFile(path: String): ScanResult = withContext(Dispatchers.IO) {
-        bus.tryEmit(NexEvent.ScanStarted(path))
-        val start = System.currentTimeMillis()
-        val f = File(path)
-        if (!f.exists()) {
-            val result = ScanResult(targetPath = path, sha256 = "", verdict = Verdict.CLEAN, score = 0,
-                startedAt = start, durationMs = 0, findings = emptyList())
-            bus.tryEmit(NexEvent.ScanFinished(result))
-            return@withContext result
-        }
-        val sha = sha256(f)
-        val size = f.length()
-        val mtime = f.lastModified()
-        val head = try { f.readHead(64) } catch (e: Exception) { byteArrayOf() }
-        val magic = head.copyOf(minOf(4, head.size))
-        val target = ScanTarget(path, f, sha, size, mtime, magic, head)
+    private val networkDetectors = detectors.filter { it.network }
+    private val localDetectors = detectors.filterNot { it.network }.sortedByDescending { it.priority }
 
-        val sorted = detectors.sortedByDescending { it.priority }
-        val allFindings = mutableListOf<Finding>()
-        for (d in sorted) {
-            try {
-                val res = d.inspect(target)
-                allFindings += res
-                // early stop: two independent critical signals -> DANGEROUS already
-                val distinctCritical = allFindings.filter { it.severity == Severity.CRITICAL }.map { it.detector }.toSet()
-                if (distinctCritical.size >= 2) break
-            } catch (e: Exception) {
-                // detector failure shouldn't abort whole scan
-            }
-        }
+    suspend fun scanFile(path: String, options: ScanOptions = ScanOptions(deep = true, useCache = false)): ScanResult =
+        withContext(Dispatchers.IO) { scanOne(path, options, null, Mutex()) }
 
-        val score = computeScore(allFindings).coerceAtMost(100)
-        val verdict = computeVerdict(score, allFindings)
-        val result = ScanResult(
-            targetPath = path, sha256 = sha, verdict = verdict, score = score,
-            startedAt = start, durationMs = System.currentTimeMillis() - start, findings = allFindings
-        )
-
-        // Threat event for UI popup
-        if (verdict != Verdict.CLEAN) {
-            bus.tryEmit(NexEvent.ThreatDetected(path, verdict, score))
-        }
-
-        persist(result)
-        bus.tryEmit(NexEvent.ScanFinished(result))
-        result
-    }
-
-    suspend fun scanDirectory(
-        root: String,
-        onProgress: (Int, Int) -> Unit = { _, _ -> },
-        onFileStart: (String) -> Unit = {},
-        onFileDone: (ScanResult) -> Unit = {}
-    ): List<ScanResult> = withContext(Dispatchers.IO) {
-        val files = try {
-            File(root).walkTopDown().filter { it.isFile }.toList()
-        } catch (e: Exception) {
-            emptyList()
-        }
-        val out = mutableListOf<ScanResult>()
-        files.forEachIndexed { i, f ->
-            // Durdur butonu: iptal edildiğinde döngüyü hemen kes
-            currentCoroutineContext().ensureActive()
-            onFileStart(f.absolutePath)
-            val r = scanFile(f.absolutePath)
-            out += r
-            onFileDone(r)
-            onProgress(i + 1, files.size)
-            bus.tryEmit(NexEvent.ScanProgress(i + 1, out.count { it.verdict != Verdict.CLEAN }))
-        }
-        out
-    }
-
+    /**
+     * Yolları sırayla tarar, oturum kaydını başlatır ve bitirir.
+     * Sonuçlar [onFileDone] ile canlı akar; dönen değer özet oturumdur.
+     */
     suspend fun scanPaths(
         paths: List<String>,
+        options: ScanOptions = ScanOptions(),
         onProgress: (Int, Int) -> Unit = { _, _ -> },
         onFileStart: (String) -> Unit = {},
         onFileDone: (ScanResult) -> Unit = {}
-    ): List<ScanResult> = withContext(Dispatchers.IO) {
-        val out = mutableListOf<ScanResult>()
-        paths.forEachIndexed { i, path ->
-            currentCoroutineContext().ensureActive()
-            onFileStart(path)
-            val r = scanFile(path)
-            out += r
-            onFileDone(r)
-            onProgress(i + 1, paths.size)
-            bus.tryEmit(NexEvent.ScanProgress(i + 1, out.count { it.verdict != Verdict.CLEAN }))
-        }
-        out
-    }
+    ): ScanSession = withContext(Dispatchers.IO) {
+        val session = ScanSession(
+            startedAt = System.currentTimeMillis(),
+            mode = options.mode,
+            label = options.label
+        )
+        try {
+            db.scanSessionDao().insert(
+                ScanSessionEntity(
+                    id = session.id,
+                    startedAt = session.startedAt,
+                    mode = session.mode,
+                    label = session.label,
+                    filesScanned = 0,
+                    threats = 0,
+                    cachedFiles = 0,
+                    status = "running"
+                )
+            )
+        } catch (e: Exception) { /* DB yoksa tarama yine devam etsin */ }
 
-    private fun computeScore(findings: List<Finding>): Int {
-        val byDetector = findings.groupBy { it.detector }
-        var total = 0
-        byDetector.forEach { (_, fs) ->
-            val sorted = fs.map { it.weight }.sortedDescending()
-            total += (sorted.firstOrNull() ?: 0) + sorted.drop(1).sum() / 2
-        }
-        return total
-    }
+        var scanned = 0
+        var threats = 0
+        var cached = 0
+        val buffer = mutableListOf<FileCacheEntity>()
 
-    private fun computeVerdict(score: Int, findings: List<Finding>): Verdict {
-        val distinctDetectors = findings.map { it.detector }.distinct().size
-        val hasCritical = findings.any { it.severity == Severity.CRITICAL }
-        return when {
-            score >= 70 && hasCritical && distinctDetectors >= 2 -> Verdict.DANGEROUS
-            score >= 30 -> Verdict.SUSPICIOUS
-            else -> Verdict.CLEAN
+        suspend fun flush() {
+            if (buffer.isEmpty()) return
+            cache.putAll(buffer.toList())
+            buffer.clear()
         }
-    }
 
-    private suspend fun persist(r: ScanResult) {
-        db.withTransaction {
-            db.scanResultDao().insert(ScanResultEntity(r.id, r.targetPath, r.sha256, r.verdict.name, r.score, r.startedAt, r.durationMs))
-            r.findings.forEach { f ->
-                db.findingDao().insert(FindingEntity(f.id, r.id, f.detector, f.ruleId, f.severity.name, f.weight, toJson(f.evidence)))
+        val scannedCounter = AtomicInteger(0)
+        val threatCounter = AtomicInteger(0)
+        val cachedCounter = AtomicInteger(0)
+        val cacheMutex = Mutex()
+        val concurrency = 4
+        val channel = Channel<String>(64)
+        try {
+            coroutineScope {
+                val workers = (1..concurrency).map {
+                    async {
+                        for (path in channel) {
+                            currentCoroutineContext().ensureActive()
+                            onFileStart(path)
+                            val result = scanOne(path, options, buffer, cacheMutex)
+                            val done = scannedCounter.incrementAndGet()
+                            if (result.cached) cachedCounter.incrementAndGet()
+                            if (result.verdict != Verdict.CLEAN) threatCounter.incrementAndGet()
+                            onFileDone(result)
+                            onProgress(done, paths.size)
+                            bus.tryEmit(NexEvent.ScanProgress(done, threatCounter.get()))
+                            cacheMutex.withLock {
+                                if (buffer.size >= 100) {
+                                    cache.putAll(buffer.toList())
+                                    buffer.clear()
+                                }
+                            }
+                        }
+                    }
+                }
+                for (path in paths) {
+                    currentCoroutineContext().ensureActive()
+                    channel.send(path)
+                }
+                channel.close()
+                workers.awaitAll()
             }
-            db.timelineDao().insert(TimelineEntity(UUID.randomUUID().toString(), System.currentTimeMillis(), "scan", "scan_finished", "${r.targetPath} -> ${r.verdict}"))
+            flush()
+            scanned = scannedCounter.get()
+            threats = threatCounter.get()
+            cached = cachedCounter.get()
+            val finished = session.copy(
+                finishedAt = System.currentTimeMillis(),
+                filesScanned = scanned,
+                threats = threats,
+                cachedFiles = cached,
+                status = "completed",
+                score = sessionScore(threats)
+            )
+            finishSession(finished)
+            bus.tryEmit(NexEvent.Timeline(com.nexguard.core.common.TimelineEvent(
+                source = "scan", kind = "session_finished",
+                summary = "${finished.label}: $scanned dosya, $threats tehdit",
+                refId = finished.id
+            )))
+            finished
+        } catch (e: CancellationException) {
+            scanned = scannedCounter.get()
+            threats = threatCounter.get()
+            cached = cachedCounter.get()
+            // İptal edilmiş bağlamda DB yazımı engellenebilir; özet kaydı yine de tamamlanmalı.
+            withContext(NonCancellable) {
+                flush()
+                finishSession(
+                    session.copy(
+                        finishedAt = System.currentTimeMillis(),
+                        filesScanned = scanned,
+                        threats = threats,
+                        cachedFiles = cached,
+                        status = "stopped",
+                        score = sessionScore(threats)
+                    )
+                )
+            }
+            throw e
+        } catch (e: Exception) {
+            scanned = scannedCounter.get()
+            threats = threatCounter.get()
+            cached = cachedCounter.get()
+            withContext(NonCancellable) {
+                flush()
+                finishSession(
+                    session.copy(
+                        finishedAt = System.currentTimeMillis(),
+                        filesScanned = scanned,
+                        threats = threats,
+                        cachedFiles = cached,
+                        status = "failed",
+                        score = sessionScore(threats)
+                    )
+                )
+            }
+            throw e
+        }
+    }
+
+    private suspend fun finishSession(session: ScanSession) {
+        try {
+            db.scanSessionDao().finish(
+                id = session.id,
+                finishedAt = session.finishedAt ?: System.currentTimeMillis(),
+                files = session.filesScanned,
+                threats = session.threats,
+                cached = session.cachedFiles,
+                status = session.status,
+                score = session.score
+            )
+        } catch (e: Exception) { /* özet kaydı kritik değil */ }
+    }
+
+    private fun sessionScore(threats: Int): Int = (100 - threats * 15).coerceIn(10, 100)
+
+    private suspend fun scanOne(
+        path: String,
+        options: ScanOptions,
+        cacheBuffer: MutableList<FileCacheEntity>?,
+        cacheMutex: Mutex
+    ): ScanResult {
+        val startedAt = System.currentTimeMillis()
+        val f = File(path)
+        if (!f.isFile || !f.canRead()) {
+            return ScanResult(
+                targetPath = path, sha256 = "", verdict = Verdict.CLEAN, score = 0,
+                startedAt = startedAt, durationMs = 0, source = options.source
+            )
+        }
+
+        val size = f.length()
+        val mtime = f.lastModified()
+        val extension = f.extension.lowercase()
+
+        if (options.useCache && !options.deep) {
+            cache.cleanCached(path, size, mtime)?.let { hit ->
+                return ScanResult(
+                    targetPath = path,
+                    sha256 = hit.sha256,
+                    verdict = Verdict.CLEAN,
+                    score = hit.score,
+                    startedAt = startedAt,
+                    durationMs = 0,
+                    findings = emptyList(),
+                    sizeBytes = size,
+                    cached = true,
+                    source = options.source
+                )
+            }
+        }
+
+        val sha = sha256(f, ScanPolicy.hashLimit(extension, size))
+        val sampleLimit = ScanPolicy.sampleLimit(extension, size)
+        val head = f.readHead(minOf(sampleLimit, 64))
+        val target = ScanTarget(
+            path = path,
+            file = f,
+            sha256 = sha,
+            size = size,
+            mtime = mtime,
+            magic = head.copyOf(minOf(4, head.size)),
+            sampleLimit = sampleLimit
+        )
+
+        val allFindings = mutableListOf<Finding>()
+        for (d in localDetectors) {
+            currentCoroutineContext().ensureActive()
+            try {
+                allFindings += d.inspect(target)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Dedektör hatası taramayı durdurmaz.
+            }
+        }
+
+        var (score, verdict) = RiskScorer.evaluate(allFindings)
+
+        // Bulut yalnızca kullanıcı açtıysa ve yerel analiz dosyayı şüpheli bulduysa.
+        // Böylece her çalıştırılabilir dosya için ağ isteği yapılmaz.
+        if (options.cloudEnabled && sha.isNotBlank() && verdict == Verdict.SUSPICIOUS) {
+            for (d in networkDetectors) {
+                currentCoroutineContext().ensureActive()
+                try {
+                    allFindings += d.inspect(target)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Ağ hatası yerel sonucu değiştirmez.
+                }
+            }
+            val evaluated = RiskScorer.evaluate(allFindings)
+            score = evaluated.first
+            verdict = evaluated.second
+        }
+
+        val limitedFindings = allFindings
+            .distinctBy { it.detector to it.ruleId to it.evidence.values.joinToString("|") }
+            .take(200)
+        val threatType = if (verdict == Verdict.CLEAN) "" else ThreatCatalog.threatType(limitedFindings)
+
+        val result = ScanResult(
+            targetPath = path,
+            sha256 = sha,
+            verdict = verdict,
+            score = score,
+            startedAt = startedAt,
+            durationMs = System.currentTimeMillis() - startedAt,
+            findings = limitedFindings,
+            sizeBytes = size,
+            cached = false,
+            source = options.source
+        )
+
+        val cacheEntity = FileCacheEntity(
+            targetPath = path,
+            sizeBytes = size,
+            mtime = mtime,
+            sha256 = sha,
+            verdict = verdict.name,
+            score = score,
+            threatType = threatType,
+            engineVersion = ScanPolicy.ENGINE_VERSION,
+            updatedAt = System.currentTimeMillis()
+        )
+        if (cacheBuffer != null) cacheMutex.withLock { cacheBuffer += cacheEntity } else cache.put(cacheEntity)
+
+        if (verdict != Verdict.CLEAN) {
+            persistThreat(result, threatType)
+            bus.tryEmit(NexEvent.ThreatDetected(path, verdict, score, threatType, options.source))
+        }
+        bus.tryEmit(NexEvent.ScanFinished(result))
+        return result
+    }
+
+    private suspend fun persistThreat(r: ScanResult, threatType: String) {
+        try {
+            db.withTransaction {
+                db.scanResultDao().insert(
+                    ScanResultEntity(
+                        id = r.id,
+                        targetPath = r.targetPath,
+                        sha256 = r.sha256,
+                        verdict = r.verdict.name,
+                        score = r.score,
+                        startedAt = r.startedAt,
+                        durationMs = r.durationMs,
+                        sizeBytes = r.sizeBytes,
+                        threatType = threatType,
+                        source = r.source
+                    )
+                )
+                db.findingDao().insertAll(
+                    r.findings.map { f ->
+                        FindingEntity(
+                            id = f.id,
+                            scanId = r.id,
+                            detector = f.detector,
+                            ruleId = f.ruleId,
+                            severity = f.severity.name,
+                            weight = f.weight,
+                            evidenceJson = toJson(f.evidence)
+                        )
+                    }
+                )
+                db.timelineDao().insert(
+                    TimelineEntity(
+                        id = UUID.randomUUID().toString(),
+                        ts = System.currentTimeMillis(),
+                        source = r.source,
+                        kind = "threat",
+                        summary = "${File(r.targetPath).name}: $threatType (${r.score})",
+                        refId = r.id
+                    )
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Kalıcı kayıt başarısız olsa da tarama sonucu gösterilir.
         }
     }
 
     private fun toJson(map: Map<String, String>): String {
         if (map.isEmpty()) return "{}"
-        return "{" + map.entries.joinToString(",") { "\"${it.key.replace("\\", "\\\\").replace("\"", "\\\"")}\":\"${it.value.replace("\\", "\\\\").replace("\"", "\\\"")}\"" } + "}"
+        return "{" + map.entries.joinToString(",") {
+            "\"${it.key.replace("\\", "\\\\").replace("\"", "\\\"")}\":\"${it.value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+        } + "}"
     }
 
-    private fun sha256(f: File): String = try {
+    private suspend fun sha256(f: File, maxBytes: Long): String = try {
         val md = MessageDigest.getInstance("SHA-256")
-        // Performans: çok büyük dosyalarda yalnızca ilk 64 MB hash'lenir
-        val maxBytes = 64L * 1024 * 1024
         var total = 0L
         f.inputStream().use { ins ->
-            val buf = ByteArray(8192)
+            val buf = ByteArray(16 * 1024)
             while (total < maxBytes) {
+                // Büyük dosyalarda durdurma isteğine hızlı yanıt ver.
+                currentCoroutineContext().ensureActive()
                 val n = ins.read(buf)
                 if (n <= 0) break
                 val take = minOf(n.toLong(), maxBytes - total).toInt()
@@ -169,5 +404,9 @@ class ScanOrchestrator(
         }
         val digest = md.digest().joinToString("") { "%02x".format(it) }
         if (f.length() > maxBytes) "$digest-$total" else digest
-    } catch (e: Exception) { "" }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        ""
+    }
 }

@@ -15,4 +15,5 @@ dependencies {
     api("javax.inject:javax.inject:1")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
+    testImplementation("junit:junit:4.13.2")
 }

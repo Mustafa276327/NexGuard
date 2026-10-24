@@ -8,14 +8,20 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -23,63 +29,54 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import com.nexguard.app.scan.ScanMode
+import com.nexguard.app.ui.components.*
+import com.nexguard.app.util.Prefs
+import com.nexguard.app.util.fileTypeIcon
+import com.nexguard.app.util.humanBytes
 import com.nexguard.core.common.ScanResult
 import com.nexguard.core.common.Severity
+import com.nexguard.core.common.ThreatCatalog
 import com.nexguard.core.common.Verdict
+import kotlinx.coroutines.delay
 import java.io.File
 
 private fun hasStorageAccess(context: Context): Boolean =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        Environment.isExternalStorageManager()
+        try { Environment.isExternalStorageManager() } catch (e: Exception) { false }
     } else {
-        ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        ) == PackageManager.PERMISSION_GRANTED
     }
 
-private fun verdictColor(v: Verdict): Color = when (v) {
-    Verdict.CLEAN -> Color(0xFF2E7D32)
-    Verdict.SUSPICIOUS -> Color(0xFFF9A825)
-    Verdict.DANGEROUS -> Color(0xFFC62828)
+private fun openAppDetails(context: Context) {
+    try {
+        context.startActivity(
+            Intent(
+                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:${context.packageName}")
+            )
+        )
+    } catch (e: Exception) { }
 }
 
-private fun verdictLabel(v: Verdict): String = when (v) {
-    Verdict.CLEAN -> "TEMİZ"
-    Verdict.SUSPICIOUS -> "ŞÜPHELİ"
-    Verdict.DANGEROUS -> "TEHLİKELİ"
-}
+private enum class FeedFilter { ALL, THREATS, CLEAN }
 
-private fun ruleLabel(rule: String): String = when (rule.uppercase()) {
-    "POLYGLOT" -> "Çoklu format (polyglot)"
-    "RTLO" -> "Sağdan sola gizleme (RTLO)"
-    "EXECUTABLE_DISGUISED" -> "Gizlenmiş çalıştırılabilir"
-    "HIGH_ENTROPY" -> "Yüksek entropi (şifrelenmiş/paketlenmiş)"
-    "ENTROPY" -> "Yüksek entropi"
-    "DANGEROUS_PERMISSION" -> "Tehlikeli izin"
-    "KNOWN_MALWARE" -> "Bilinen zararlı yazılım"
-    "SUSPICIOUS_URL" -> "Şüpheli bağlantı"
-    "IOC" -> "Zararlı gösterge (IOC)"
-    "APK_DEBUG" -> "Debug imzalı APK"
-    else -> rule
-}
-
-private fun sevLabel(s: Severity): String = when (s) {
-    Severity.CRITICAL -> "KRİTİK"
-    Severity.HIGH -> "YÜKSEK"
-    Severity.MEDIUM -> "ORTA"
-    Severity.LOW -> "DÜŞÜK"
-    Severity.INFO -> "BİLGİ"
-}
-
-private fun sevColor(s: Severity): Color = when (s) {
-    Severity.CRITICAL -> Color(0xFFB71C1C)
-    Severity.HIGH -> Color(0xFFE65100)
-    Severity.MEDIUM -> Color(0xFFF9A825)
-    Severity.LOW -> Color(0xFF1565C0)
-    Severity.INFO -> Color(0xFF546E7A)
+private fun sourceLabel(source: String): String = when (source) {
+    "download" -> "İndirme izleme"
+    "install" -> "Yeni uygulama"
+    "app" -> "Uygulama analizi"
+    else -> "Manuel tarama"
 }
 
 @Composable
@@ -87,181 +84,470 @@ fun ScanRoute(onBack: () -> Unit) {
     val vm: ScanViewModel = hiltViewModel()
     val state by vm.state.collectAsState()
     val context = LocalContext.current
-    var hasAccess by remember { mutableStateOf(hasStorageAccess(context)) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var storageOk by remember { mutableStateOf(hasStorageAccess(context)) }
     var selected by remember { mutableStateOf<ScanResult?>(null) }
-
-    LaunchedEffect(hasAccess) {
-        if (hasAccess && !state.running && !state.finished && !state.stopped) vm.scan(ScanMode.FULL)
+    var confirmDelete by remember { mutableStateOf<ScanResult?>(null) }
+    var filter by remember { mutableStateOf(FeedFilter.ALL) }
+    var autoStarted by remember { mutableStateOf(false) }
+    val preferredMode = remember {
+        if (Prefs.defaultMode(context) == "quick") ScanMode.QUICK else ScanMode.FULL
+    }
+    val storagePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {
+        storageOk = hasStorageAccess(context)
     }
 
-    fun openPermissionSettings() {
-        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${context.packageName}"))
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) storageOk = hasStorageAccess(context)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(storageOk) {
+        if (storageOk && !autoStarted && !state.running && !state.finished &&
+            !state.stopped && state.error == null
+        ) {
+            autoStarted = true
+            vm.scan(preferredMode)
+        }
+    }
+
+    LaunchedEffect(state.message) {
+        if (state.message != null) {
+            delay(4500)
+            vm.clearMessage()
+        }
+    }
+
+    val progress = if (state.total > 0) state.scanned.toFloat() / state.total else 0f
+    val filtered = remember(state.feed, filter) {
+        when (filter) {
+            FeedFilter.ALL -> state.feed
+            FeedFilter.THREATS -> state.feed.filter { it.verdict != Verdict.CLEAN }
+            FeedFilter.CLEAN -> state.feed.filter { it.verdict == Verdict.CLEAN }
+        }
+    }
+
+    fun openStorageSettings() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                context.startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        Uri.parse("package:${context.packageName}")
+                    )
+                )
+            } catch (e: Exception) {
+                try {
+                    context.startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                } catch (e2: Exception) { }
+            }
         } else {
-            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+            try {
+                storagePermissionLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
+            } catch (e: Exception) {
+                openAppDetails(context)
+            }
         }
-        try { context.startActivity(intent) } catch (e: Exception) { }
     }
 
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) { Text("← Geri") }
-            Spacer(Modifier.width(4.dp))
-            Column {
-                Text("Dosya Tarama", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Text(
-                    state.root.ifEmpty { vm.defaultRoot() },
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-        Spacer(Modifier.height(10.dp))
-
-        if (!hasAccess) {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(14.dp)) {
-                    Text("Depolama erişimi gerekli", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Tüm dosyaları ve kurulu uygulamaları taramak için NexGuard'a tüm dosyalara erişim izni verin.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = { openPermissionSettings() }) { Text("İzin Ver") }
-                        OutlinedButton(onClick = { hasAccess = hasStorageAccess(context) }) { Text("İzni Kontrol Et") }
+    NgBackground {
+        Column(Modifier.fillMaxSize()) {
+            NgTopBar(
+                title = "Dosya Tarama",
+                subtitle = "Motor v${vm.engineVersion} · ${vm.detectorCount} dedektör · ${vm.signatureCount} imza",
+                onBack = onBack,
+                actions = {
+                    if (!state.running) {
+                        IconButton(
+                            onClick = {
+                                vm.scan(
+                                    if (!state.finished && !state.stopped) preferredMode else state.mode
+                                )
+                            }
+                        ) {
+                            Icon(Icons.Outlined.Refresh, contentDescription = "Yeniden tara")
+                        }
                     }
                 }
-            }
-            Spacer(Modifier.height(10.dp))
-        }
+            )
 
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(14.dp)) {
-                val fraction = if (state.total > 0) state.scanned.toFloat() / state.total else 0f
-                LinearProgressIndicator(
-                    progress = fraction,
-                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape)
-                )
-                Spacer(Modifier.height(10.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(
-                        if (state.preparing) "Dosyalar hazırlanıyor…" else "Taranan: ${state.scanned} / ${state.total}",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Text(
-                        "Tehdit: ${state.threats}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = if (state.threats > 0) Color(0xFFC62828) else Color(0xFF2E7D32),
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                Spacer(Modifier.height(6.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (state.running) {
-                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
-                    }
-                    Text(
-                        when {
-                            state.preparing -> "Dosya listesi oluşturuluyor…"
-                            state.running -> "Taranıyor: ${state.current}"
-                            state.stopped -> "Tarama durduruldu"
-                            state.finished -> "Tarama tamamlandı"
-                            else -> "Hazır"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                state.message?.let {
-                    Spacer(Modifier.height(6.dp))
-                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                }
-            }
-        }
-        Spacer(Modifier.height(10.dp))
-
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Canlı Akış", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            Text("${state.feed.size} kayıt · dokun ve incele", style = MaterialTheme.typography.bodySmall)
-        }
-        Spacer(Modifier.height(4.dp))
-        LazyColumn(Modifier.weight(1f), reverseLayout = true) {
-            items(state.feed, key = { it.id }) { r ->
-                FeedRow(r, onClick = { selected = r })
-            }
-        }
-
-        Spacer(Modifier.height(10.dp))
-        if (state.running) {
-            Button(
-                onClick = { vm.stop() },
-                modifier = Modifier.fillMaxWidth().height(52.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+            LazyColumn(
+                Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text("DURDUR", fontWeight = FontWeight.Bold)
-            }
-        } else {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { vm.scan(ScanMode.FULL) }, modifier = Modifier.weight(1f).height(52.dp)) {
-                    Text("Tam Tara")
+                if (!storageOk) {
+                    item {
+                        SectionCard(title = "Depolama erişimi", icon = Icons.Outlined.Folder) {
+                            Text(
+                                "Tam tarama için tüm dosyalara erişim izni gerekir. İzin vermeden de erişilebilen dosyalar taranabilir.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(onClick = { openStorageSettings() }, shape = RoundedCornerShape(12.dp)) {
+                                    Text("İzni aç")
+                                }
+                                OutlinedButton(
+                                    onClick = { storageOk = hasStorageAccess(context) },
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Text("Kontrol et")
+                                }
+                                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                                    TextButton(onClick = { openAppDetails(context) }) {
+                                        Text("Uygulama ayarları")
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-                OutlinedButton(onClick = { vm.scan(ScanMode.QUICK) }, modifier = Modifier.weight(1f).height(52.dp)) {
-                    Text("Hızlı Tara")
-                }
-            }
-        }
 
-        state.error?.let {
-            Spacer(Modifier.height(8.dp))
-            Text("Hata: $it", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                item {
+                    SectionCard(title = "Tarama durumu", icon = Icons.Outlined.Radar) {
+                        if (state.running || state.preparing) {
+                            Row(verticalAlignment = Alignment.Bottom) {
+                                Text(
+                                    if (state.total > 0) "%${(progress * 100).toInt()}" else "%0",
+                                    style = MaterialTheme.typography.displaySmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(Modifier.width(12.dp))
+                                Column(Modifier.weight(1f).padding(bottom = 6.dp)) {
+                                    Text(
+                                        if (state.preparing) "Dosya listesi hazırlanıyor…" else "Taranan ${state.scanned} / ${state.total}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Text(
+                                        "${state.threats} tehdit · ${state.cached} önbellek",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (state.threats > 0) MaterialTheme.colorScheme.error
+                                        else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
+                            }
+                            Spacer(Modifier.height(12.dp))
+                            if (state.preparing) {
+                                LinearProgressIndicator(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(8.dp)
+                                        .clip(CircleShape)
+                                )
+                            } else {
+                                LinearProgressIndicator(
+                                    progress = progress,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(8.dp)
+                                        .clip(CircleShape)
+                                )
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                if (state.current.isNotBlank()) "Şu an: ${state.current}" else "Dosyalar hazırlanıyor…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(Modifier.height(14.dp))
+                            Button(
+                                onClick = { vm.stop() },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(50.dp),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error,
+                                    contentColor = MaterialTheme.colorScheme.onError
+                                )
+                            ) {
+                                Icon(Icons.Outlined.Stop, contentDescription = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("TARAMAYI DURDUR", fontWeight = FontWeight.Bold)
+                            }
+                        } else {
+                            val session = state.session
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                ScoreRing(
+                                    score = session?.score ?: if (state.threats > 0) 40 else 100,
+                                    modifier = Modifier.size(104.dp),
+                                    stroke = 10.dp,
+                                    label = "Skor"
+                                )
+                                Spacer(Modifier.width(16.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        when {
+                                            state.error != null -> "Tarama tamamlanamadı"
+                                            state.stopped -> "Tarama durduruldu"
+                                            state.finished -> if ((session?.threats ?: state.threats) > 0) "Tehditler bulundu" else "Cihaz temiz"
+                                            else -> "Taramaya hazır"
+                                        },
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    if (session != null) {
+                                        Text(
+                                            "${session.filesScanned} dosya · ${session.cachedFiles} önbellek",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Text(
+                                            "${session.threats} tehdit · skor ${session.score}/100",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = if (session.threats > 0) MaterialTheme.colorScheme.error
+                                            else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    } else {
+                                        Text(
+                                            "Tüm depolama ve kurulu uygulamalar taranır. Dosya içeriği cihazdan çıkmaz.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(14.dp))
+                            if (!state.running) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = { vm.scan(ScanMode.FULL) },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(48.dp),
+                                        shape = RoundedCornerShape(14.dp)
+                                    ) {
+                                        Icon(Icons.Outlined.Radar, contentDescription = null)
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(if (state.finished || state.stopped) "Tam tara" else "TARA")
+                                    }
+                                    OutlinedButton(
+                                        onClick = { vm.scan(ScanMode.QUICK) },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(48.dp),
+                                        shape = RoundedCornerShape(14.dp)
+                                    ) {
+                                        Icon(Icons.Outlined.Bolt, contentDescription = null)
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("Hızlı tara")
+                                    }
+                                }
+                            }
+                            if (state.error != null) {
+                                Spacer(Modifier.height(10.dp))
+                                WarningBanner(state.error ?: "")
+                            }
+                        }
+                    }
+                }
+
+                state.message?.let { msg ->
+                    item {
+                        InfoBanner(
+                            text = msg,
+                            icon = Icons.Outlined.CheckCircle,
+                            container = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f),
+                            contentColor = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
+                }
+
+                item {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Canlı akış",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        FilterChip(
+                            selected = filter == FeedFilter.ALL,
+                            onClick = { filter = FeedFilter.ALL },
+                            label = { Text("Tümü ${state.feed.size}") }
+                        )
+                        FilterChip(
+                            selected = filter == FeedFilter.THREATS,
+                            onClick = { filter = FeedFilter.THREATS },
+                            label = { Text("Tehditler ${state.feed.count { it.verdict != Verdict.CLEAN }}") }
+                        )
+                        FilterChip(
+                            selected = filter == FeedFilter.CLEAN,
+                            onClick = { filter = FeedFilter.CLEAN },
+                            label = { Text("Temiz") }
+                        )
+                    }
+                }
+
+                if (filtered.isEmpty()) {
+                    item {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 36.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                if (state.running || state.preparing) {
+                                    CircularProgressIndicator(modifier = Modifier.size(30.dp), strokeWidth = 3.dp)
+                                    Spacer(Modifier.height(12.dp))
+                                    Text(
+                                        "Dosyalar taranıyor…",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                } else {
+                                    Icon(
+                                        Icons.Outlined.FolderOpen,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.outline
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(
+                                        "Bu filtrede kayıt yok",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    items(filtered, key = { it.id }) { r ->
+                        FeedRow(
+                            result = r,
+                            handled = r.targetPath in state.handledPaths,
+                            onClick = { selected = r }
+                        )
+                    }
+                }
+
+                item { Spacer(Modifier.height(24.dp)) }
+            }
         }
     }
 
     selected?.let { r ->
+        val type = if (r.verdict == Verdict.CLEAN) "Temiz" else ThreatCatalog.threatType(r.findings)
+        val file = File(r.targetPath)
+        val canModify = file.isFile && file.canRead() && file.parentFile?.canWrite() != false
         ScanDetailDialog(
             result = r,
+            threatType = type,
+            handled = r.targetPath in state.handledPaths,
+            canModify = canModify,
             onQuarantine = { vm.quarantine(r); selected = null },
+            onDelete = { selected = null; confirmDelete = r },
             onDismiss = { selected = null }
+        )
+    }
+
+    confirmDelete?.let { r ->
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            icon = { Icon(Icons.Outlined.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Kalıcı olarak silinsin mi?") },
+            text = {
+                Text(
+                    "${File(r.targetPath).name} geri alınamaz şekilde silinecek. " +
+                        "Dosya bir tehdit değilse önce yedeklemeyi düşünün."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { vm.deleteFile(r); confirmDelete = null },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) { Text("Kalıcı sil") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = null }) { Text("Vazgeç") }
+            }
         )
     }
 }
 
 @Composable
-private fun FeedRow(r: ScanResult, onClick: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
+private fun FeedRow(result: ScanResult, handled: Boolean, onClick: () -> Unit) {
+    val file = File(result.targetPath)
+    val color = verdictColor(result.verdict)
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            if (result.verdict == Verdict.CLEAN) MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
+            else color.copy(alpha = 0.28f)
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
     ) {
-        Box(Modifier.size(10.dp).clip(CircleShape).background(verdictColor(r.verdict)))
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f)) {
-            Text(
-                File(r.targetPath).name.ifEmpty { r.targetPath },
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                File(r.targetPath).parent ?: "",
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        Spacer(Modifier.width(8.dp))
-        Column(horizontalAlignment = Alignment.End) {
-            Text(
-                verdictLabel(r.verdict),
-                style = MaterialTheme.typography.labelSmall,
-                color = verdictColor(r.verdict),
-                fontWeight = FontWeight.Bold
-            )
-            Text("${r.score}", style = MaterialTheme.typography.labelSmall)
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(38.dp)
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(color.copy(alpha = 0.10f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    fileTypeIcon(file.extension),
+                    contentDescription = null,
+                    tint = color,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    file.name.ifBlank { result.targetPath },
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    listOfNotNull(
+                        file.parentFile?.name,
+                        humanBytes(result.sizeBytes),
+                        if (result.cached) "önbellek" else null,
+                        if (handled) "işlem yapıldı" else null
+                    ).joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Column(horizontalAlignment = Alignment.End) {
+                VerdictPill(result.verdict)
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    "${result.score}",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = color
+                )
+            }
         }
     }
 }
@@ -269,74 +555,147 @@ private fun FeedRow(r: ScanResult, onClick: () -> Unit) {
 @Composable
 private fun ScanDetailDialog(
     result: ScanResult,
+    threatType: String,
+    handled: Boolean,
+    canModify: Boolean,
     onQuarantine: () -> Unit,
+    onDelete: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val file = File(result.targetPath)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Column {
-                Text(File(result.targetPath).name.ifEmpty { "Dosya" }, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    "${verdictLabel(result.verdict)} · Skor ${result.score}/100",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = verdictColor(result.verdict),
-                    fontWeight = FontWeight.Bold
+                    file.name.ifBlank { "Dosya" },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    VerdictPill(result.verdict)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "$threatType · ${result.score}/100",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = verdictColor(result.verdict),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         },
         text = {
-            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
-                Text(result.targetPath, style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(4.dp))
+            Column(
+                Modifier
+                    .heightIn(max = 440.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
                 Text(
-                    "SHA-256: ${result.sha256.take(24)}${if (result.sha256.length > 24) "…" else ""}",
-                    style = MaterialTheme.typography.bodySmall
+                    result.targetPath,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Text("Süre: ${result.durationMs} ms", style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(8.dp))
+                InfoRow("Tür", threatType)
+                InfoRow("Boyut", humanBytes(result.sizeBytes))
+                InfoRow("Süre", "${result.durationMs} ms")
+                InfoRow("Kaynak", sourceLabel(result.source))
+                if (result.sha256.isNotBlank()) {
+                    InfoRow("SHA-256", result.sha256.take(32) + if (result.sha256.length > 32) "…" else "", mono = true)
+                }
+                if (result.cached) {
+                    InfoRow("Önbellek", "Değişmemiş dosya; yeniden okunmadı")
+                }
+                if (handled) {
+                    Spacer(Modifier.height(8.dp))
+                    InfoBanner(
+                        "Bu dosya için işlem yapıldı.",
+                        icon = Icons.Outlined.CheckCircle,
+                        container = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f),
+                        contentColor = MaterialTheme.colorScheme.tertiary
+                    )
+                }
                 Spacer(Modifier.height(10.dp))
+                if (result.verdict != Verdict.CLEAN) {
+                    InfoBanner(
+                        text = ThreatCatalog.advice(result.findings),
+                        icon = Icons.Outlined.Warning,
+                        container = verdictColor(result.verdict).copy(alpha = 0.10f),
+                        contentColor = verdictColor(result.verdict)
+                    )
+                    Spacer(Modifier.height(12.dp))
+                }
 
                 if (result.findings.isEmpty()) {
                     Text(
-                        if (result.verdict == Verdict.CLEAN) "Tehdit bulgusu yok." else "Bulgular kaydedilmedi.",
+                        if (result.verdict == Verdict.CLEAN) "Tehdit bulgusu yok. Dosya temiz." else "Bulgular kaydedilmedi.",
                         style = MaterialTheme.typography.bodyMedium
                     )
                 } else {
-                    Text("Tespitler (${result.findings.size})", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Tespitler (${result.findings.size})",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.height(4.dp))
                     result.findings.forEach { f ->
-                        Card(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-                            Column(Modifier.padding(10.dp)) {
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        val info = ThreatCatalog.info(f.ruleId)
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    info.title,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                SeverityPill(f.severity)
+                            }
+                            Text(
+                                info.advice,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                "Dedektör: ${f.detector} · ağırlık ${f.weight}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                            if (f.evidence.isNotEmpty()) {
+                                f.evidence.entries.take(5).forEach { (k, v) ->
                                     Text(
-                                        ruleLabel(f.ruleId),
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    Text(
-                                        sevLabel(f.severity),
+                                        "$k: $v",
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = sevColor(f.severity),
-                                        fontWeight = FontWeight.Bold
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
                                     )
-                                }
-                                Text("Dedektör: ${f.detector} · Ağırlık: ${f.weight}", style = MaterialTheme.typography.bodySmall)
-                                if (f.evidence.isNotEmpty()) {
-                                    Spacer(Modifier.height(2.dp))
-                                    f.evidence.entries.take(4).forEach { (k, v) ->
-                                        Text("$k: $v", style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                    }
                                 }
                             }
+                            Divider(Modifier.padding(top = 6.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
                         }
                     }
+                }
+
+                if (!canModify && result.verdict != Verdict.CLEAN) {
+                    Spacer(Modifier.height(8.dp))
+                    WarningBanner("Bu dosya salt okunur bir konumda (ör. sistem uygulaması). Karantina uygulanamaz.")
                 }
             }
         },
         confirmButton = {
-            if (result.verdict != Verdict.CLEAN) {
-                TextButton(onClick = onQuarantine) { Text("Karantinaya Al") }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (result.verdict != Verdict.CLEAN && !handled && canModify) {
+                    TextButton(
+                        onClick = onDelete,
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    ) { Text("Kalıcı sil") }
+                    TextButton(onClick = onQuarantine) { Text("Karantinaya al") }
+                }
             }
         },
         dismissButton = {
