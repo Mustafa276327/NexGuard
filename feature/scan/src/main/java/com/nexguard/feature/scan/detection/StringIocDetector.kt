@@ -18,12 +18,31 @@ class StringIocDetector : Detector {
         ".work", ".support", ".country", ".stream", ".download", ".loan"
     )
     private val urlRegex = Regex("""https?://[^\s"'<>\\]+""", RegexOption.IGNORE_CASE)
-    private val eicar = "X5O!P%@AP[4\\PZX54(P^)7CC)7}\$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!\$H+H*"
+
+    /**
+     * EICAR standart test imzası. Bilinçli olarak parçalı tutulur: derlenmiş DEX
+     * içinde tam dize bulunmadığı için NexGuard kendi APK'sını "EICAR" diye
+     * işaretlemez. Çalışma zamanında birleştirilir.
+     */
+    private val eicar: String = buildString {
+        append("X5O!P%@AP[4\\PZX54(P^)")
+        append("7CC)7}")
+        append("\$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!")
+        append("\$H+H*")
+    }
 
     override suspend fun inspect(target: ScanTarget): List<Finding> {
         if (target.extension in ScanPolicy.mediaExtensions) return emptyList()
+
+        // Önce küçük bir baş ile metin mi diye bak: ikili kaplarda (APK/ZIP/EXE)
+        // 4 MB örnek okumak ve dev bir String üretmek gereksizdir.
+        val head = target.file.readHead(4096)
+        if (head.isEmpty()) return emptyList()
+        if (!isTextLike(target, head)) return emptyList()
+
         val bytes = target.sample()
         if (bytes.isEmpty()) return emptyList()
+
         val text = String(bytes, Charsets.ISO_8859_1)
         val out = mutableListOf<Finding>()
 
@@ -78,6 +97,13 @@ class StringIocDetector : Detector {
             )
         }
         return out
+    }
+
+    /** Metin tabanlı içerik mi? Betik/belge uzantıları her zaman; diğerleri bayt oranına göre. */
+    private fun isTextLike(target: ScanTarget, bytes: ByteArray): Boolean {
+        val ext = target.extension
+        if (ext in ScanPolicy.scriptExtensions || ext in ScanPolicy.documentExtensions) return true
+        return FileTypeSniffer.looksLikeText(bytes)
     }
 
     private fun hostOf(url: String): String? = try {

@@ -1,10 +1,14 @@
 package com.nexguard.feature.scan.detection
 
 import androidx.room.withTransaction
+import android.util.Log
 import com.nexguard.core.common.Finding
 import com.nexguard.core.common.RiskScorer
 import com.nexguard.core.common.ScanResult
 import com.nexguard.core.common.ScanSession
+import com.nexguard.core.common.ScanHealth
+import com.nexguard.core.common.ScanStatusOutcome
+import com.nexguard.core.common.ScanStatusPolicy
 import com.nexguard.core.common.Severity
 import com.nexguard.core.common.ThreatCatalog
 import com.nexguard.core.common.Verdict
@@ -104,6 +108,7 @@ class ScanOrchestrator(
         val scannedCounter = AtomicInteger(0)
         val threatCounter = AtomicInteger(0)
         val cachedCounter = AtomicInteger(0)
+        val issueCounter = AtomicInteger(0)
         val cacheMutex = Mutex()
         val concurrency = 4
         val channel = Channel<String>(64)
@@ -117,7 +122,8 @@ class ScanOrchestrator(
                             val result = scanOne(path, options, buffer, cacheMutex)
                             val done = scannedCounter.incrementAndGet()
                             if (result.cached) cachedCounter.incrementAndGet()
-                            if (result.verdict != Verdict.CLEAN) threatCounter.incrementAndGet()
+                            if (result.isThreat) threatCounter.incrementAndGet()
+                            if (result.status.isIssue) issueCounter.incrementAndGet()
                             onFileDone(result)
                             onProgress(done, paths.size)
                             bus.tryEmit(NexEvent.ScanProgress(done, threatCounter.get()))
@@ -146,6 +152,7 @@ class ScanOrchestrator(
                 filesScanned = scanned,
                 threats = threats,
                 cachedFiles = cached,
+                errors = issueCounter.get(),
                 status = "completed",
                 score = sessionScore(threats)
             )
@@ -169,6 +176,7 @@ class ScanOrchestrator(
                         filesScanned = scanned,
                         threats = threats,
                         cachedFiles = cached,
+                        errors = issueCounter.get(),
                         status = "stopped",
                         score = sessionScore(threats)
                     )
@@ -187,6 +195,7 @@ class ScanOrchestrator(
                         filesScanned = scanned,
                         threats = threats,
                         cachedFiles = cached,
+                        errors = issueCounter.get(),
                         status = "failed",
                         score = sessionScore(threats)
                     )
@@ -204,6 +213,7 @@ class ScanOrchestrator(
                 files = session.filesScanned,
                 threats = session.threats,
                 cached = session.cachedFiles,
+                errors = session.errors,
                 status = session.status,
                 score = session.score
             )
@@ -220,11 +230,13 @@ class ScanOrchestrator(
     ): ScanResult {
         val startedAt = System.currentTimeMillis()
         val f = File(path)
-        if (!f.isFile || !f.canRead()) {
-            return ScanResult(
-                targetPath = path, sha256 = "", verdict = Verdict.CLEAN, score = 0,
-                startedAt = startedAt, durationMs = 0, source = options.source
-            )
+        val exists = f.exists()
+        val isFile = exists && f.isFile
+        val readable = isFile && f.canRead()
+        val health = ScanHealth(exists = exists, isFile = isFile, readable = readable)
+        if (!exists || !isFile || !readable) {
+            // Erişilemeyen dosya için hüküm üretilmez; "temiz" denmez.
+            return inconclusive(path, startedAt, options, ScanStatusPolicy.evaluate(health))
         }
 
         val size = f.length()
@@ -249,6 +261,14 @@ class ScanOrchestrator(
         }
 
         val sha = sha256(f, ScanPolicy.hashLimit(extension, size))
+        if (sha.isBlank()) {
+            // İçerik okunamadıysa imza/örnek analizi güvenilir değildir.
+            return inconclusive(
+                path, startedAt, options,
+                ScanStatusPolicy.evaluate(health.copy(hashComputed = false)),
+                size = size
+            )
+        }
         val sampleLimit = ScanPolicy.sampleLimit(extension, size)
         val head = f.readHead(minOf(sampleLimit, 64))
         val target = ScanTarget(
@@ -262,6 +282,7 @@ class ScanOrchestrator(
         )
 
         val allFindings = mutableListOf<Finding>()
+        val failedDetectors = mutableListOf<String>()
         for (d in localDetectors) {
             currentCoroutineContext().ensureActive()
             try {
@@ -269,7 +290,10 @@ class ScanOrchestrator(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // Dedektör hatası taramayı durdurmaz.
+                // Dedektör hatası taramayı durdurmaz ama sonucu "kesin" de yapmaz.
+                // Tanılama için yalnızca dedektör adı yazılır; dosya yolu loglanmaz.
+                Log.w("NexGuardScan", "Dedektör çalışamadı: ${d.name}", e)
+                failedDetectors += d.name
             }
         }
 
@@ -298,6 +322,12 @@ class ScanOrchestrator(
             .take(200)
         val threatType = if (verdict == Verdict.CLEAN) "" else ThreatCatalog.threatType(limitedFindings)
 
+        // Dosya tarama sırasında değiştiyse sonuç kesin sayılmaz.
+        val changedDuringScan = f.length() != size || f.lastModified() != mtime
+        val outcome = ScanStatusPolicy.evaluate(
+            health.copy(failedDetectors = failedDetectors, changedDuringScan = changedDuringScan)
+        )
+
         val result = ScanResult(
             targetPath = path,
             sha256 = sha,
@@ -308,29 +338,60 @@ class ScanOrchestrator(
             findings = limitedFindings,
             sizeBytes = size,
             cached = false,
-            source = options.source
+            source = options.source,
+            status = outcome.status,
+            error = outcome.message,
+            detectorErrors = failedDetectors.distinct()
         )
 
-        val cacheEntity = FileCacheEntity(
-            targetPath = path,
-            sizeBytes = size,
-            mtime = mtime,
-            sha256 = sha,
-            verdict = verdict.name,
-            score = score,
-            threatType = threatType,
-            engineVersion = ScanPolicy.ENGINE_VERSION,
-            updatedAt = System.currentTimeMillis()
-        )
-        if (cacheBuffer != null) cacheMutex.withLock { cacheBuffer += cacheEntity } else cache.put(cacheEntity)
+        // Önbellek yalnızca kesin (tamamlanmış) sonuçlar için kullanılır.
+        if (outcome.status.isConclusive) {
+            val cacheEntity = FileCacheEntity(
+                targetPath = path,
+                sizeBytes = size,
+                mtime = mtime,
+                sha256 = sha,
+                verdict = verdict.name,
+                score = score,
+                threatType = threatType,
+                engineVersion = ScanPolicy.ENGINE_VERSION,
+                updatedAt = System.currentTimeMillis()
+            )
+            if (cacheBuffer != null) cacheMutex.withLock { cacheBuffer += cacheEntity } else cache.put(cacheEntity)
+        }
 
-        if (verdict != Verdict.CLEAN) {
+        if (result.isThreat) {
             persistThreat(result, threatType)
             bus.tryEmit(NexEvent.ThreatDetected(path, verdict, score, threatType, options.source))
         }
         bus.tryEmit(NexEvent.ScanFinished(result))
         return result
     }
+
+    /**
+     * Dosya okunamadığında/analiz tamamlanamadığında üretilen sonuç. Hüküm
+     * [Verdict.CLEAN] görünse bile [ScanStatus] ile "temiz değil, bilinmiyor"
+     * olarak işaretlenir; önbelleğe yazılmaz, tehdit sayılmaz.
+     */
+    private fun inconclusive(
+        path: String,
+        startedAt: Long,
+        options: ScanOptions,
+        outcome: ScanStatusOutcome,
+        size: Long = 0
+    ): ScanResult = ScanResult(
+        targetPath = path,
+        sha256 = "",
+        verdict = Verdict.CLEAN,
+        score = 0,
+        startedAt = startedAt,
+        durationMs = System.currentTimeMillis() - startedAt,
+        sizeBytes = size,
+        cached = false,
+        source = options.source,
+        status = outcome.status,
+        error = outcome.message
+    )
 
     private suspend fun persistThreat(r: ScanResult, threatType: String) {
         try {

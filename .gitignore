@@ -7,4 +7,9 @@ build/
 local.properties
 .idea/
 .DS_Store
-# keystore committed for reproducible signing (personal use)
+
+# İmza materyali asla depoya eklenmez
+*.jks
+*.keystore
+keystore/*.jks
+keystore/*.keystore

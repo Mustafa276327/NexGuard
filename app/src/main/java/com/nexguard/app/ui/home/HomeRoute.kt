@@ -38,6 +38,8 @@ data class HomeUi(
     val lastScan: String = "Henüz tarama yok",
     val score: Int = 100,
     val threats: Int = 0,
+    /** Son taramada teknik olarak tamamlanamayan dosya sayısı. */
+    val issues: Int = 0,
     val total: Int = 0,
     val recentThreats: List<HomeThreat> = emptyList(),
     val monitorOn: Boolean = true,
@@ -78,6 +80,7 @@ class HomeViewModel @Inject constructor(
                 lastScan = if (last != null) relativeTime(last) else "Henüz tarama yok",
                 score = score,
                 threats = session?.threats ?: 0,
+                issues = session?.errors ?: 0,
                 total = session?.filesScanned ?: 0,
                 recentThreats = recent.map {
                     HomeThreat(

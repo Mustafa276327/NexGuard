@@ -10,7 +10,12 @@ class EntropyDetector : Detector {
 
     // Betik/kaynak dosyalarda yüksek entropi normal olabilir (minify/encode); yalnızca
     // ikili/çalıştırılabilir dosyalarda entropi kontrolü yapılır.
-    private val allowed = ScanPolicy.executableExtensions + setOf("", "dat", "tmp", "unknown")
+    // APK/JAR birer ZIP kabıdır ve içeriği zaten sıkıştırılmıştır; entropileri
+    // doğal olarak ~8'dir. Bu yüzden APK/JAR entropi kontrolünden çıkarılır.
+    private val allowed = setOf(
+        "exe", "dll", "sys", "scr", "ocx", "cpl", "drv", "elf", "so", "bin",
+        "", "dat", "tmp", "unknown"
+    )
 
     override suspend fun inspect(target: ScanTarget): List<Finding> {
         // Sıkıştırılmış medya ve arşivler doğal olarak yüksek entropilidir; yanlış alarm üretme.

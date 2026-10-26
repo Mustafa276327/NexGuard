@@ -17,6 +17,8 @@ class DocumentAnalyzer : Detector {
     private val magicOle = byteArrayOf(0xD0.toByte(), 0xCF.toByte(), 0x11, 0xE0.toByte())
     private val magicElf = byteArrayOf(0x7F, 0x45, 0x4C, 0x46)
     private val magicMz = byteArrayOf(0x4D, 0x5A)
+    private val magicRar = byteArrayOf(0x52, 0x61, 0x72, 0x21)
+    private val magic7z = byteArrayOf(0x37, 0x7A, 0xBC.toByte(), 0xAF.toByte(), 0x27, 0x1C)
 
     override suspend fun inspect(target: ScanTarget): List<Finding> {
         val ext = target.extension
@@ -74,7 +76,81 @@ class DocumentAnalyzer : Detector {
             "rtf" -> out += inspectRtf(bytes)
             "html", "htm", "xhtml", "svg" -> out += inspectHtml(bytes)
         }
+
+        // Görselin bitişinden SONRA çalıştırılabilir/arşiv yükü eklenmiş mi?
+        // (JPEG+ZIP, GIF+MZ gibi polyglot dosyalar.) Sıkıştırılmış görsel verisi
+        // rastgele olsa da ilk formatın bittiği yerin ötesindeki imza güçlü sinyaldir.
+        if (isMedia && ext in setOf("jpg", "jpeg", "png", "gif")) {
+            out += inspectAppendedPayload(target)
+        }
         return out
+    }
+
+    private fun inspectAppendedPayload(target: ScanTarget): List<Finding> {
+        val tail = target.file.readTail(16 * 1024)
+        if (tail.size < 32) return emptyList()
+        val end = imageEnd(tail, target.extension) ?: return emptyList()
+
+        var i = end
+        // Hizalama/dolgu baytlarını atla (bazı üreticiler sıfırla doldurur).
+        while (i < tail.size && (tail[i] == 0x00.toByte() || tail[i] == 0x0A.toByte() ||
+                tail[i] == 0x0D.toByte() || tail[i] == 0x20.toByte())
+        ) i++
+        if (i >= tail.size - 4) return emptyList()
+
+        val rest = tail.copyOfRange(i, tail.size)
+        val kind = when {
+            startsWith(rest, magicMz) -> "MZ"
+            startsWith(rest, magicElf) -> "ELF"
+            startsWith(rest, magicZip) -> "ZIP"
+            startsWith(rest, magicRar) -> "RAR"
+            startsWith(rest, magic7z) -> "7Z"
+            startsWith(rest, magicPdf) -> "PDF"
+            else -> null
+        } ?: return emptyList()
+
+        return listOf(
+            Finding(
+                detector = name,
+                ruleId = "EMBEDDED_AFTER_IMAGE",
+                severity = Severity.HIGH,
+                weight = 65,
+                evidence = mapOf(
+                    "format" to kind,
+                    "extension" to target.extension,
+                    "note" to "görsel sonuna eklenmiş yük"
+                )
+            )
+        )
+    }
+
+    /** Görselin gerçek bitiş konumu; bulunamazsa null. */
+    private fun imageEnd(tail: ByteArray, ext: String): Int? {
+        when (ext) {
+            "jpg", "jpeg" -> {
+                for (i in tail.size - 2 downTo 0) {
+                    if (tail[i] == 0xFF.toByte() && tail[i + 1] == 0xD9.toByte()) return i + 2
+                }
+            }
+            "png" -> {
+                val needle = "IEND".toByteArray(Charsets.ISO_8859_1)
+                for (i in tail.size - 8 downTo 0) {
+                    if (matchesAt(tail, i, needle)) return i + 8
+                }
+            }
+            "gif" -> {
+                for (i in tail.size - 1 downTo 0) {
+                    if (tail[i] == 0x3B.toByte()) return i + 1
+                }
+            }
+        }
+        return null
+    }
+
+    private fun matchesAt(haystack: ByteArray, offset: Int, needle: ByteArray): Boolean {
+        if (offset < 0 || offset + needle.size > haystack.size) return false
+        for (i in needle.indices) if (haystack[offset + i] != needle[i]) return false
+        return true
     }
 
     private fun inspectPdf(bytes: ByteArray): List<Finding> {

@@ -4,6 +4,31 @@ import java.util.UUID
 
 enum class Verdict { CLEAN, SUSPICIOUS, DANGEROUS }
 
+/**
+ * Bir dosya taramasının teknik durumu. [Verdict] yalnızca tehdit hükmünü anlatır;
+ * dosya okunamadığında, hash hesaplanamadığında veya bir dedektör çöktüğünde
+ * sonuç "temiz" sayılmaz. Karar verirken [ScanResult.isCleanFile] kullanılmalıdır.
+ */
+enum class ScanStatus {
+    /** Tüm aşamalar tamamlandı; [ScanResult.verdict] güvenilir. */
+    COMPLETED,
+
+    /** Tarama yapıldı ama kısmi: dedektör hatası veya dosya değişimi. */
+    PARTIAL,
+
+    /** Dosya bulunamadı veya yol artık bir dosyayı göstermiyor. */
+    NOT_FOUND,
+
+    /** Dosya var ama okunamadı (izin yok / erişim engellendi). */
+    UNREADABLE,
+
+    /** Beklenmeyen hata; güvenilir sonuç üretilemedi. */
+    ERROR;
+
+    val isConclusive: Boolean get() = this == COMPLETED
+    val isIssue: Boolean get() = this != COMPLETED
+}
+
 enum class Severity { INFO, LOW, MEDIUM, HIGH, CRITICAL }
 
 data class Finding(
@@ -28,8 +53,23 @@ data class ScanResult(
     /** Sonuç, değişmemiş dosya önbelleğinden geldiyse true. */
     val cached: Boolean = false,
     /** manual | download | install | app */
-    val source: String = "manual"
-)
+    val source: String = "manual",
+    /** Teknik tarama durumu. [Verdict] tek başına yeterli değildir. */
+    val status: ScanStatus = ScanStatus.COMPLETED,
+    /** Teknik durum açıklaması; kullanıcıya gösterilebilir. */
+    val error: String? = null,
+    /** Çalışamayan yerel dedektörlerin adları. */
+    val detectorErrors: List<String> = emptyList()
+) {
+    /**
+     * Yalnızca tamamlanmış (kısmi olmayan) ve tehdit içermeyen tarama gerçekten
+     * "temiz" sayılır. `verdict == CLEAN` tek başına bu anlama gelmez.
+     */
+    val isCleanFile: Boolean get() = status == ScanStatus.COMPLETED && verdict == Verdict.CLEAN
+
+    /** Tehdit hükmü var mı. Teknik hata durumları tehdit sayılmaz. */
+    val isThreat: Boolean get() = verdict != Verdict.CLEAN
+}
 
 data class ScanSession(
     val id: String = UUID.randomUUID().toString(),
@@ -40,6 +80,8 @@ data class ScanSession(
     val filesScanned: Int = 0,
     val threats: Int = 0,
     val cachedFiles: Int = 0,
+    /** Teknik olarak tamamlanamayan dosya sayısı (okunamadı, bulunamadı, kısmi). */
+    val errors: Int = 0,
     val status: String = "running",
     val score: Int = 100
 )

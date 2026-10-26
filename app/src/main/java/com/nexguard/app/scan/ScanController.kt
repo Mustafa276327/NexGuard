@@ -42,6 +42,8 @@ data class ScanUiState(
     val total: Int = 0,
     val threats: Int = 0,
     val cached: Int = 0,
+    /** Teknik olarak tamamlanamayan dosya sayısı (okunamadı, bulunamadı, kısmi). */
+    val issues: Int = 0,
     val feed: List<com.nexguard.core.common.ScanResult> = emptyList(),
     val session: com.nexguard.core.common.ScanSession? = null,
     val handledPaths: Set<String> = emptySet(),
@@ -130,13 +132,15 @@ class ScanController @Inject constructor(
                         }
                     },
                     onFileDone = { r ->
-                        val threat = r.verdict != Verdict.CLEAN
-                        if (threat || due(lastFeed, 100L)) {
+                        val threat = r.isThreat
+                        val issue = r.status.isIssue
+                        if (threat || issue || due(lastFeed, 100L)) {
                             lastFeed = System.currentTimeMillis()
                             _state.update { st ->
                                 st.copy(
                                     feed = (listOf(r) + st.feed).take(500),
                                     threats = st.threats + if (threat) 1 else 0,
+                                    issues = st.issues + if (issue) 1 else 0,
                                     cached = st.cached + if (r.cached) 1 else 0
                                 )
                             }
@@ -151,12 +155,14 @@ class ScanController @Inject constructor(
                         scanned = session.filesScanned,
                         threats = session.threats,
                         cached = session.cachedFiles,
+                        issues = session.errors,
                         session = session
                     )
                 }
                 NgLog.i(
                     "Tarama",
-                    "$label tamamlandı: ${session.filesScanned} dosya, ${session.threats} tehdit, skor ${session.score}"
+                    "$label tamamlandı: ${session.filesScanned} dosya, ${session.threats} tehdit, " +
+                        "${session.errors} sorun, skor ${session.score}"
                 )
             } catch (e: CancellationException) {
                 NgLog.w("Tarama", "$label kullanıcı tarafından durduruldu")
@@ -169,6 +175,7 @@ class ScanController @Inject constructor(
                     filesScanned = current.scanned,
                     threats = current.threats,
                     cachedFiles = current.cached,
+                    errors = current.issues,
                     status = "stopped",
                     score = (100 - current.threats * 15).coerceIn(10, 100)
                 )
@@ -250,6 +257,12 @@ class ScanController @Inject constructor(
                     context.packageManager.getInstalledPackages(0).forEach { pi ->
                         ctx.ensureActive()
                         val ai = pi.applicationInfo ?: return@forEach
+                        // Sistem uygulamaları ve kendi paketimiz taranmaz: değiştirilemezler
+                        // ve güçlü izinleri nedeniyle yanlış alarm üretirler.
+                        val systemFlags = android.content.pm.ApplicationInfo.FLAG_SYSTEM or
+                            android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP
+                        val isSystem = (ai.flags and systemFlags) != 0
+                        if (isSystem || pi.packageName == context.packageName) return@forEach
                         ai.sourceDir?.let { if (it.isNotBlank()) out += it }
                         ai.splitSourceDirs?.forEach { if (it.isNotBlank()) out += it }
                     }

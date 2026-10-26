@@ -64,26 +64,44 @@ class PrefilterDetector : Detector {
             )
         }
 
-        val magic = target.magic
-        val mismatch = when (ext) {
-            "jpg", "jpeg" -> !(magic.size >= 3 && magic[0] == 0xFF.toByte() && magic[1] == 0xD8.toByte())
-            "png" -> !(magic.size >= 4 && magic[0] == 0x89.toByte() && magic[1] == 0x50.toByte())
-            "gif" -> !(magic.size >= 4 && magic[0] == 0x47.toByte() && magic[1] == 0x49.toByte())
-            "webp" -> !(magic.size >= 4 && magic[0] == 0x52.toByte() && magic[1] == 0x49.toByte())
-            "pdf" -> !(magic.size >= 4 && magic[0] == 0x25.toByte() && magic[1] == 0x50.toByte())
-            "zip", "apk", "jar", "docx", "xlsx", "pptx" ->
-                !(magic.size >= 4 && magic[0] == 0x50.toByte() && magic[1] == 0x4B.toByte())
-            "rar" -> !(magic.size >= 4 && magic[0] == 0x52.toByte() && magic[1] == 0x61.toByte())
-            "7z" -> !(magic.size >= 4 && magic[0] == 0x37.toByte() && magic[1] == 0x7A.toByte())
-            "exe", "dll", "scr" -> !(magic.size >= 2 && magic[0] == 0x4D.toByte() && magic[1] == 0x5A.toByte())
-            "elf", "so" -> !(magic.size >= 4 && magic[0] == 0x7F.toByte() && magic[1] == 0x45.toByte())
-            else -> false
-        }
-        if (mismatch) {
-            out += Finding(
-                detector = this.name, ruleId = "EXT_MAGIC_MISMATCH", severity = Severity.MEDIUM, weight = 45,
-                evidence = mapOf("extension" to ext, "magic" to magic.joinToString("") { "%02x".format(it) })
+        // Uzantı ile gerçek içerik uyuşmazlığı. Kural: gerçek bir görsel/video,
+        // uzantısı yanlış olsa bile tehdit sayılmaz. Yalnızca çalıştırılabilir
+        // veya arşiv içeriği başka bir tür kılığındaysa risk bildirilir.
+        val expected = FileTypeSniffer.expectedForExtension(ext)
+        val content = FileTypeSniffer.sniff(target.file.readHead(4096))
+        if (expected != null && content != ContentType.UNKNOWN && content != expected) {
+            val evidence = mapOf(
+                "extension" to ext,
+                "expected" to expected.name.lowercase(),
+                "actual" to content.name.lowercase()
             )
+            when {
+                // .jpg/.pdf kılığındaki .exe/.elf → DocumentAnalyzer da işaretler;
+                // burada yalnızca o kapsamın dışındaki uzantılar ele alınır.
+                content.isExecutable &&
+                    ext !in ScanPolicy.documentExtensions &&
+                    ext !in ScanPolicy.mediaExtensions ->
+                    out += Finding(
+                        detector = name, ruleId = "EXECUTABLE_DISGUISED",
+                        severity = Severity.CRITICAL, weight = 85, evidence = evidence
+                    )
+
+                content.isArchive && !expected.isArchive ->
+                    out += Finding(
+                        detector = name, ruleId = "ARCHIVE_DISGUISED",
+                        severity = Severity.HIGH, weight = 50, evidence = evidence
+                    )
+
+                // Yanlış etiketlenmiş medya (ör. WebP/HEIC dosyası .jpg adıyla):
+                // tehdit değil, sessizce kabul et.
+                content.isMedia && expected.isMedia -> Unit
+
+                // Tek başına hüküm vermeye yetmeyen zayıf sinyal (eşik 30).
+                else -> out += Finding(
+                    detector = name, ruleId = "EXT_MAGIC_MISMATCH",
+                    severity = Severity.LOW, weight = 22, evidence = evidence
+                )
+            }
         }
         return out
     }

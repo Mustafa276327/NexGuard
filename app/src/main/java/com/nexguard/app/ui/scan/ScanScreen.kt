@@ -70,7 +70,7 @@ private fun openAppDetails(context: Context) {
     } catch (e: Exception) { }
 }
 
-private enum class FeedFilter { ALL, THREATS, CLEAN }
+private enum class FeedFilter { ALL, THREATS, ISSUES, CLEAN }
 
 private fun sourceLabel(source: String): String = when (source) {
     "download" -> "İndirme izleme"
@@ -127,8 +127,9 @@ fun ScanRoute(onBack: () -> Unit) {
     val filtered = remember(state.feed, filter) {
         when (filter) {
             FeedFilter.ALL -> state.feed
-            FeedFilter.THREATS -> state.feed.filter { it.verdict != Verdict.CLEAN }
-            FeedFilter.CLEAN -> state.feed.filter { it.verdict == Verdict.CLEAN }
+            FeedFilter.THREATS -> state.feed.filter { it.isThreat }
+            FeedFilter.ISSUES -> state.feed.filter { it.status.isIssue }
+            FeedFilter.CLEAN -> state.feed.filter { it.isCleanFile }
         }
     }
 
@@ -228,10 +229,17 @@ fun ScanRoute(onBack: () -> Unit) {
                                         fontWeight = FontWeight.Medium
                                     )
                                     Text(
-                                        "${state.threats} tehdit · ${state.cached} önbellek",
+                                        buildString {
+                                            append("${state.threats} tehdit")
+                                            if (state.issues > 0) append(" · ${state.issues} sorun")
+                                            append(" · ${state.cached} önbellek")
+                                        },
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = if (state.threats > 0) MaterialTheme.colorScheme.error
-                                        else MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = when {
+                                            state.threats > 0 -> MaterialTheme.colorScheme.error
+                                            state.issues > 0 -> Color(0xFFE08A00)
+                                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                        }
                                     )
                                 }
                                 CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
@@ -279,6 +287,8 @@ fun ScanRoute(onBack: () -> Unit) {
                             }
                         } else {
                             val session = state.session
+                            val threatCount = session?.threats ?: state.threats
+                            val issueCount = session?.errors ?: state.issues
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 ScoreRing(
                                     score = session?.score ?: if (state.threats > 0) 40 else 100,
@@ -292,7 +302,9 @@ fun ScanRoute(onBack: () -> Unit) {
                                         when {
                                             state.error != null -> "Tarama tamamlanamadı"
                                             state.stopped -> "Tarama durduruldu"
-                                            state.finished -> if ((session?.threats ?: state.threats) > 0) "Tehditler bulundu" else "Cihaz temiz"
+                                            state.finished && threatCount > 0 -> "Tehditler bulundu"
+                                            state.finished && issueCount > 0 -> "Kısmen tamamlandı"
+                                            state.finished -> "Cihaz temiz"
                                             else -> "Taramaya hazır"
                                         },
                                         style = MaterialTheme.typography.titleMedium,
@@ -305,10 +317,17 @@ fun ScanRoute(onBack: () -> Unit) {
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                         Text(
-                                            "${session.threats} tehdit · skor ${session.score}/100",
+                                            buildString {
+                                                append("${session.threats} tehdit")
+                                                if (session.errors > 0) append(" · ${session.errors} sorun")
+                                                append(" · skor ${session.score}/100")
+                                            },
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = if (session.threats > 0) MaterialTheme.colorScheme.error
-                                            else MaterialTheme.colorScheme.onSurfaceVariant
+                                            color = when {
+                                                session.threats > 0 -> MaterialTheme.colorScheme.error
+                                                session.errors > 0 -> Color(0xFFE08A00)
+                                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                            }
                                         )
                                     } else {
                                         Text(
@@ -387,12 +406,17 @@ fun ScanRoute(onBack: () -> Unit) {
                         FilterChip(
                             selected = filter == FeedFilter.THREATS,
                             onClick = { filter = FeedFilter.THREATS },
-                            label = { Text("Tehditler ${state.feed.count { it.verdict != Verdict.CLEAN }}") }
+                            label = { Text("Tehditler ${state.feed.count { it.isThreat }}") }
+                        )
+                        FilterChip(
+                            selected = filter == FeedFilter.ISSUES,
+                            onClick = { filter = FeedFilter.ISSUES },
+                            label = { Text("Sorunlar ${state.feed.count { it.status.isIssue }}") }
                         )
                         FilterChip(
                             selected = filter == FeedFilter.CLEAN,
                             onClick = { filter = FeedFilter.CLEAN },
-                            label = { Text("Temiz") }
+                            label = { Text("Temiz ${state.feed.count { it.isCleanFile }}") }
                         )
                     }
                 }
@@ -446,7 +470,11 @@ fun ScanRoute(onBack: () -> Unit) {
     }
 
     selected?.let { r ->
-        val type = if (r.verdict == Verdict.CLEAN) "Temiz" else ThreatCatalog.threatType(r.findings)
+        val type = when {
+            r.isThreat -> ThreatCatalog.threatType(r.findings)
+            r.status.isIssue -> ThreatCatalog.statusLabel(r.status)
+            else -> "Temiz"
+        }
         val file = File(r.targetPath)
         val canModify = file.isFile && file.canRead() && file.parentFile?.canWrite() != false
         ScanDetailDialog(
@@ -487,13 +515,13 @@ fun ScanRoute(onBack: () -> Unit) {
 @Composable
 private fun FeedRow(result: ScanResult, handled: Boolean, onClick: () -> Unit) {
     val file = File(result.targetPath)
-    val color = verdictColor(result.verdict)
+    val color = resultColor(result)
     Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = androidx.compose.foundation.BorderStroke(
             1.dp,
-            if (result.verdict == Verdict.CLEAN) MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
+            if (result.isCleanFile) MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
             else color.copy(alpha = 0.28f)
         ),
         modifier = Modifier
@@ -539,14 +567,25 @@ private fun FeedRow(result: ScanResult, handled: Boolean, onClick: () -> Unit) {
             }
             Spacer(Modifier.width(8.dp))
             Column(horizontalAlignment = Alignment.End) {
-                VerdictPill(result.verdict)
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    "${result.score}",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = color
-                )
+                if (result.status.isIssue) {
+                    ScanStatusPill(result.status)
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        "—",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = color
+                    )
+                } else {
+                    VerdictPill(result.verdict)
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        "${result.score}",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = color
+                    )
+                }
             }
         }
     }
@@ -574,12 +613,13 @@ private fun ScanDetailDialog(
                 )
                 Spacer(Modifier.height(6.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    VerdictPill(result.verdict)
+                    if (result.status.isIssue) ScanStatusPill(result.status) else VerdictPill(result.verdict)
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        "$threatType · ${result.score}/100",
+                        if (result.status.isIssue) threatType
+                        else "$threatType · ${result.score}/100",
                         style = MaterialTheme.typography.labelMedium,
-                        color = verdictColor(result.verdict),
+                        color = resultColor(result),
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -607,6 +647,15 @@ private fun ScanDetailDialog(
                 if (result.cached) {
                     InfoRow("Önbellek", "Değişmemiş dosya; yeniden okunmadı")
                 }
+                if (result.status.isIssue) {
+                    Spacer(Modifier.height(8.dp))
+                    InfoBanner(
+                        text = result.error ?: ThreatCatalog.statusAdvice(result.status),
+                        icon = Icons.Outlined.Info,
+                        container = scanStatusColor(result.status).copy(alpha = 0.10f),
+                        contentColor = scanStatusColor(result.status)
+                    )
+                }
                 if (handled) {
                     Spacer(Modifier.height(8.dp))
                     InfoBanner(
@@ -617,7 +666,7 @@ private fun ScanDetailDialog(
                     )
                 }
                 Spacer(Modifier.height(10.dp))
-                if (result.verdict != Verdict.CLEAN) {
+                if (result.isThreat) {
                     InfoBanner(
                         text = ThreatCatalog.advice(result.findings),
                         icon = Icons.Outlined.Warning,
@@ -629,7 +678,11 @@ private fun ScanDetailDialog(
 
                 if (result.findings.isEmpty()) {
                     Text(
-                        if (result.verdict == Verdict.CLEAN) "Tehdit bulgusu yok. Dosya temiz." else "Bulgular kaydedilmedi.",
+                        when {
+                            result.isCleanFile -> "Tehdit bulgusu yok. Dosya temiz."
+                            result.status.isIssue -> "Bu dosya için güvenilir sonuç üretilemedi."
+                            else -> "Bulgular kaydedilmedi."
+                        },
                         style = MaterialTheme.typography.bodyMedium
                     )
                 } else {
@@ -681,7 +734,7 @@ private fun ScanDetailDialog(
                     }
                 }
 
-                if (!canModify && result.verdict != Verdict.CLEAN) {
+                if (!canModify && result.isThreat) {
                     Spacer(Modifier.height(8.dp))
                     WarningBanner("Bu dosya salt okunur bir konumda (ör. sistem uygulaması). Karantina uygulanamaz.")
                 }
@@ -689,7 +742,7 @@ private fun ScanDetailDialog(
         },
         confirmButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                if (result.verdict != Verdict.CLEAN && !handled && canModify) {
+                if (result.isThreat && !handled && canModify) {
                     TextButton(
                         onClick = onDelete,
                         colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)

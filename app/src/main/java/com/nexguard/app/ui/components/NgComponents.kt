@@ -31,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.nexguard.core.common.ScanStatus
 import com.nexguard.core.common.Severity
 import com.nexguard.core.common.ThreatCatalog
 import com.nexguard.core.common.Verdict
@@ -244,6 +245,37 @@ fun StatusPill(
 fun VerdictPill(verdict: Verdict) {
     val color = verdictColor(verdict)
     StatusPill(ThreatCatalog.verdictLabel(verdict), color.copy(alpha = 0.14f), color)
+}
+
+/**
+ * Teknik tarama durumu rozeti. Kesin olmayan sonuçlar yeşil "TEMİZ" yerine
+ * durumlarını açıkça gösterir.
+ */
+@Composable
+fun ScanStatusPill(status: ScanStatus) {
+    if (status == ScanStatus.COMPLETED) {
+        StatusPill("TAMAM", MaterialTheme.colorScheme.outline.copy(alpha = 0.14f), MaterialTheme.colorScheme.outline)
+    } else {
+        val color = scanStatusColor(status)
+        StatusPill(ThreatCatalog.statusLabel(status), color.copy(alpha = 0.14f), color)
+    }
+}
+
+/** Sonucun genel rengi: teknik sorun turuncu, tehdit kırmızı, temiz yeşil. */
+@Composable
+fun resultColor(result: com.nexguard.core.common.ScanResult): Color = when {
+    result.isThreat -> verdictColor(result.verdict)
+    result.status.isIssue -> scanStatusColor(result.status)
+    else -> verdictColor(Verdict.CLEAN)
+}
+
+@Composable
+fun scanStatusColor(status: ScanStatus): Color = when (status) {
+    ScanStatus.COMPLETED -> MaterialTheme.colorScheme.outline
+    ScanStatus.PARTIAL -> Color(0xFFE08A00)
+    ScanStatus.NOT_FOUND -> Color(0xFF6B7A8F)
+    ScanStatus.UNREADABLE -> Color(0xFFE08A00)
+    ScanStatus.ERROR -> MaterialTheme.colorScheme.error
 }
 
 @Composable

@@ -7,7 +7,7 @@ package com.nexguard.feature.scan.detection
  */
 object ScanPolicy {
     /** Dedektör kuralları değiştiğinde artırın; dosya önbelleği geçersiz olur. */
-    const val ENGINE_VERSION = 4
+    const val ENGINE_VERSION = 6
 
     val mediaExtensions = setOf(
         "jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif", "avif", "tif", "tiff",
@@ -50,6 +50,9 @@ object ScanPolicy {
 
     fun shouldSkipDirectory(path: String, name: String): Boolean {
         val lower = name.lowercase()
+        // Gizli dizinler (.gs_fs0, .thumbnails, .trash…) uygulama önbelleği/thumbnail
+        // içerir. Buradaki ".jpg" dosyaları gerçek görsel olmadığı için taranmaz.
+        if (lower.startsWith(".")) return true
         if (lower in skipDirNames) return true
         val p = path.replace('\\', '/')
         return p.contains("/Android/data") || p.contains("/Android/obb") ||
@@ -58,6 +61,7 @@ object ScanPolicy {
 
     fun shouldSkipFile(name: String): Boolean {
         val lower = name.lowercase()
+        if (lower.startsWith(".")) return true
         return lower == "thumbs.db" || lower == ".ds_store" || lower == "desktop.ini"
     }
 

@@ -335,6 +335,7 @@ private fun HeroCard(ui: HomeUi) {
                         Text(
                             when {
                                 ui.threats > 0 -> "${ui.threats} tehdit bulundu"
+                                ui.issues > 0 -> "Bazı dosyalar taranamadı"
                                 ui.hasSession -> "Cihazın güvende"
                                 else -> "İlk taramanı yap"
                             },

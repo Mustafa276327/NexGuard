@@ -402,6 +402,7 @@ private fun SessionCard(session: ScanSessionEntity, onClick: () -> Unit) {
             ) {
                 SessionMetric("Dosya", "${session.filesScanned}")
                 SessionMetric("Tehdit", "${session.threats}", if (session.threats > 0) MaterialTheme.colorScheme.error else null)
+                SessionMetric("Sorun", "${session.errors}", if (session.errors > 0) Color(0xFFE08A00) else null)
                 SessionMetric("Önbellek", "${session.cachedFiles}")
                 SessionMetric("Skor", "${session.score}")
             }
@@ -601,6 +602,7 @@ private fun SessionDetailDialog(session: ScanSessionEntity, onDismiss: () -> Uni
                 if (seconds > 0) InfoRow("Süre", if (seconds < 60) "$seconds sn" else "${seconds / 60} dk ${seconds % 60} sn")
                 InfoRow("Taranan dosya", "${session.filesScanned}")
                 InfoRow("Tehdit", "${session.threats}")
+                if (session.errors > 0) InfoRow("Taranamayan dosya", "${session.errors}")
                 InfoRow("Önbellekten", "${session.cachedFiles}")
                 InfoRow("Güvenlik skoru", "${session.score}/100")
                 InfoRow("Mod", if (session.mode == "quick") "Hızlı tarama" else "Tam tarama")

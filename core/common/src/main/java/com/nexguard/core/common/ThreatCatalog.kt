@@ -50,6 +50,7 @@ object ThreatCatalog {
         "DEBUG_CERT" to RuleInfo("Debug sertifikası", "Şüpheli APK", "Uygulama geliştirici debug anahtarıyla imzalanmış; resmî sürüm değil."),
         "EXPIRED_CERT" to RuleInfo("Süresi geçmiş sertifika", "Şüpheli APK", "İmza sertifikasının süresi dolmuş."),
         "APK_PARSE_ERROR" to RuleInfo("APK okunamadı", "Şüpheli APK", "Paket yapısı bozuk veya kasıtlı olarak bozulmuş olabilir."),
+        "APK_DISGUISED" to RuleInfo("APK .zip olarak gizlenmiş", "Şüpheli APK", "Kurulum paketi arşiv gibi yeniden adlandırılmış; kaynağını doğrulayın."),
         "ZIP_TOO_MANY_ENTRIES" to RuleInfo("Aşırı dosya sayısı", "Şüpheli Arşiv", "Arşivde olağandışı çok dosya var; zip bomb olabilir."),
         "ZIP_BOMB_SUSPECT" to RuleInfo("Zip bomb şüphesi", "Şüpheli Arşiv", "Açıldığında diski doldurabilir; açmayın."),
 
@@ -74,9 +75,11 @@ object ThreatCatalog {
         "OFFICE_MACRO" to RuleInfo("Office makrosu", "Zararlı Belge", "Belge makro içeriyor; makroları etkinleştirmeyin."),
         "AUTO_MACRO" to RuleInfo("Otomatik çalışan makro", "Zararlı Belge", "Belge açılınca makro çalışabilir."),
         "RTF_OBJECT" to RuleInfo("RTF gömülü nesnesi", "Zararlı Belge", "RTF içinde gömülü nesne var; exploit olabilir."),
-        "EXECUTABLE_DISGUISED" to RuleInfo("Belge içinde çalıştırılabilir", "Zararlı Belge", "Belge gibi görünen dosya aslında program."),
+        "EXECUTABLE_DISGUISED" to RuleInfo("Kılık değiştirmiş çalıştırılabilir", "Gizlenmiş Dosya", "Belge/görsel gibi görünen dosya aslında çalıştırılabilir program; açmayın."),
         "HTML_SCRIPT" to RuleInfo("HTML betiği", "Şüpheli Belge", "HTML dosyası betik içeriyor; tarayıcıda açarken dikkat edin."),
         "HTML_OBFUSCATED" to RuleInfo("Karıştırılmış HTML", "Zararlı Belge", "Betik gizlenmiş/şifrelenmiş görünüyor."),
+        "EMBEDDED_AFTER_IMAGE" to RuleInfo("Görsel sonuna eklenmiş yük", "Gizlenmiş Dosya", "Görsel bittikten sonra çalıştırılabilir/arşiv veri eklenmiş; polyglot dosya olabilir."),
+        "ARCHIVE_DISGUISED" to RuleInfo("Arşiv kılığında dosya", "Gizlenmiş Dosya", "Görsel/belge gibi görünen dosya aslında arşiv; içeriğine güvenmeyin."),
 
         // --- Betik ---
         "SCRIPT_DOWNLOAD_EXEC" to RuleInfo("İndir ve çalıştır", "Zararlı Betik", "Betik uzaktan kod indirip çalıştırıyor."),
@@ -121,6 +124,26 @@ object ThreatCatalog {
         Verdict.DANGEROUS -> "TEHLİKELİ"
     }
 
+    /** Teknik tarama durumunun kısa etiketi. */
+    fun statusLabel(status: ScanStatus): String = when (status) {
+        ScanStatus.COMPLETED -> "TAMAM"
+        ScanStatus.PARTIAL -> "KISMİ"
+        ScanStatus.NOT_FOUND -> "BULUNAMADI"
+        ScanStatus.UNREADABLE -> "OKUNAMADI"
+        ScanStatus.ERROR -> "HATA"
+    }
+
+    /** Teknik durumun kullanıcıya yönelik açıklaması. */
+    fun statusAdvice(status: ScanStatus): String = when (status) {
+        ScanStatus.COMPLETED -> "Tarama tamamlandı."
+        ScanStatus.PARTIAL ->
+            "Tarama kısmen tamamlandı; bazı kontroller çalışmadı veya dosya değişti. " +
+                "Sonuç kesin değildir, dosyayı güvenilir bir kaynaktan yeniden tarayın."
+        ScanStatus.NOT_FOUND -> "Dosya artık yerinde değil; hüküm verilemedi. Bu bir tehdit işareti değildir."
+        ScanStatus.UNREADABLE -> "Dosya okunamadı; hüküm verilemedi. Erişim izinlerini kontrol edin."
+        ScanStatus.ERROR -> "Analiz tamamlanamadı; hüküm verilemedi."
+    }
+
     /**
      * Bulgulardan kullanıcıya gösterilecek tehdit türünü seçer.
      * Önce dedektörün bildirdiği aileye, sonra kural önceliğine bakar.
@@ -141,13 +164,13 @@ object ThreatCatalog {
             has("SPYWARE_COMBO", "HIDDEN_APP", "DEVICE_ADMIN_ABUSE", "BOOT_PERSISTENCE") -> "Casus Yazılım"
             has("RANSOMWARE_COMBO") -> "Fidye Yazılımı"
             has("DROPPER_COMBO", "DYNAMIC_CODE_LOADING") -> "Dropper"
-            has("PDF_JS", "PDF_AUTO_ACTION", "PDF_EMBEDDED_FILE", "PDF_LAUNCH", "OFFICE_MACRO", "AUTO_MACRO", "OOXML_MACRO", "RTF_OBJECT", "POLYGLOT", "EXECUTABLE_DISGUISED") -> "Zararlı Belge"
+            has("PDF_JS", "PDF_AUTO_ACTION", "PDF_EMBEDDED_FILE", "PDF_LAUNCH", "OFFICE_MACRO", "AUTO_MACRO", "OOXML_MACRO", "RTF_OBJECT", "POLYGLOT") -> "Zararlı Belge"
             has("SCRIPT_DOWNLOAD_EXEC", "SCRIPT_OBFUSCATION", "SCRIPT_ENCODED_COMMAND", "SCRIPT_REVERSE_SHELL", "SUSPICIOUS_COMMAND") -> "Zararlı Betik"
             has("PE_PACKED", "PE_SUSPICIOUS_IMPORTS", "PE_RWX_SECTION", "PE_HIGH_ENTROPY", "PE_INVALID") -> "Şüpheli Windows Programı"
             has("PACKER_DETECTED", "PACKER_SIGNATURE", "HIGH_ENTROPY") -> "Paketlenmiş Dosya"
             has("SUSPICIOUS_TLD", "IP_URL") -> "Kimlik Avı"
-            has("DANGEROUS_PERM_COMBO", "APK_PARSE_ERROR", "DEBUG_CERT", "EXPIRED_CERT", "MANY_EMBEDDED_URLS", "EMBEDDED_IPS", "ZIP_BOMB", "ZIP_BOMB_SUSPECT", "ZIP_SLIP", "ZIP_TOO_MANY_ENTRIES", "NESTED_TOO_DEEP") -> "Şüpheli Uygulama/Dosya"
-            has("HIDDEN_EXTENSION", "DOUBLE_EXT", "RTLO", "RTLO_EXT", "HOMOGLYPH_NAME", "TRAILING_SPACES", "EXT_MAGIC_MISMATCH") -> "Gizlenmiş Dosya"
+            has("DANGEROUS_PERM_COMBO", "APK_PARSE_ERROR", "APK_DISGUISED", "DEBUG_CERT", "EXPIRED_CERT", "MANY_EMBEDDED_URLS", "EMBEDDED_IPS", "ZIP_BOMB", "ZIP_BOMB_SUSPECT", "ZIP_SLIP", "ZIP_TOO_MANY_ENTRIES", "NESTED_TOO_DEEP") -> "Şüpheli Uygulama/Dosya"
+            has("HIDDEN_EXTENSION", "DOUBLE_EXT", "RTLO", "RTLO_EXT", "HOMOGLYPH_NAME", "TRAILING_SPACES", "EXT_MAGIC_MISMATCH", "EXECUTABLE_DISGUISED", "ARCHIVE_DISGUISED", "EMBEDDED_AFTER_IMAGE") -> "Gizlenmiş Dosya"
             else -> "Şüpheli Dosya"
         }
     }

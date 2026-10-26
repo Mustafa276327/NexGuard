@@ -1,9 +1,45 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.dagger.hilt.android")
     id("com.google.devtools.ksp")
+}
+
+/**
+ * İmza materyali kaynak kodda tutulmaz. Değerler sırayla `local.properties`
+ * (git dışı) ve ortam değişkenlerinden okunur:
+ *   NEXGUARD_STORE_FILE, NEXGUARD_STORE_PASSWORD, NEXGUARD_KEY_ALIAS, NEXGUARD_KEY_PASSWORD
+ */
+val localProps = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+
+fun signingValue(key: String): String? =
+    (localProps.getProperty(key) ?: System.getenv(key))?.trim()?.takeIf { it.isNotEmpty() }
+
+val releaseStoreFile = signingValue("NEXGUARD_STORE_FILE")
+val releaseStorePassword = signingValue("NEXGUARD_STORE_PASSWORD")
+val releaseKeyAlias = signingValue("NEXGUARD_KEY_ALIAS")
+val releaseKeyPassword = signingValue("NEXGUARD_KEY_PASSWORD")
+val hasReleaseSigning = listOf(
+    releaseStoreFile, releaseStorePassword, releaseKeyAlias, releaseKeyPassword
+).all { it != null }
+
+val releaseTaskRequested = gradle.startParameter.taskNames.any {
+    val t = it.lowercase()
+    t.contains("assemblerelease") || t.contains("bundlerelease") ||
+        t.contains("installrelease") || t.contains("packagerelease")
+}
+if (releaseTaskRequested && !hasReleaseSigning) {
+    throw GradleException(
+        "Release imzası için NEXGUARD_STORE_FILE, NEXGUARD_STORE_PASSWORD, " +
+            "NEXGUARD_KEY_ALIAS ve NEXGUARD_KEY_PASSWORD tanımlanmalı " +
+            "(local.properties veya ortam değişkeni). Debug derlemesi bu ayarlardan etkilenmez."
+    )
 }
 
 android {
@@ -20,23 +56,26 @@ android {
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
     signingConfigs {
-        create("nexguard") {
-            storeFile = rootProject.file("keystore/nexguard.jks")
-            storeType = "pkcs12"
-            storePassword = "nexguard1234"
-            keyAlias = "nexguard"
-            keyPassword = "nexguard1234"
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFile!!)
+                storeType = "pkcs12"
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
         }
     }
     buildTypes {
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("nexguard")
+            signingConfig = signingConfigs.findByName("release")
         }
         debug {
+            // Debug, kişisel release anahtarını asla kullanmaz; AGP'nin
+            // otomatik oluşturduğu debug keystore'u ile imzalanır.
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("nexguard")
         }
     }
     packaging {

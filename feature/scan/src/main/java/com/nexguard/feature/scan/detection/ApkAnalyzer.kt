@@ -25,11 +25,38 @@ import java.util.zip.ZipFile
  * - ZIP bomb / zip-slip sınırları
  * Kod çalıştırmaz; yalnızca paket içeriğini okur.
  */
-class ApkAnalyzer(@Suppress("UNUSED_PARAMETER") context: Context) : Detector {
+class ApkAnalyzer(context: Context) : Detector {
     override val name = "apk"
     override val priority = 85
 
     private val pm: PackageManager = context.packageManager
+    private val ownPackage: String = context.packageName
+
+    /**
+     * Uygulamanın kendi APK yolları. NexGuard kendi paketini tehdit olarak
+     * işaretlemez (güçlü izinleri kendi işlevi için ister).
+     */
+    private val selfApkPaths: Set<String> = buildSet {
+        val info = context.applicationInfo
+        info?.sourceDir?.let { add(it) }
+        info?.splitSourceDirs?.forEach { add(it) }
+    }
+
+    private fun isSelfApk(target: ScanTarget): Boolean {
+        val path = try { target.file.canonicalPath } catch (e: Exception) { target.file.absolutePath }
+        return selfApkPaths.any { self ->
+            val canonicalSelf = try { java.io.File(self).canonicalPath } catch (e: Exception) { self }
+            canonicalSelf == path
+        }
+    }
+
+    private fun looksLikeApk(file: java.io.File): Boolean = try {
+        java.util.zip.ZipFile(file).use { zf ->
+            zf.getEntry("AndroidManifest.xml") != null || zf.getEntry("classes.dex") != null
+        }
+    } catch (e: Exception) {
+        false
+    }
 
     private val dangerousPerms = setOf(
         "android.permission.READ_SMS", "android.permission.SEND_SMS", "android.permission.RECEIVE_SMS",
@@ -54,8 +81,21 @@ class ApkAnalyzer(@Suppress("UNUSED_PARAMETER") context: Context) : Detector {
     private val telegramBotRegex = Regex("""\b\d{8,10}:[A-Za-z0-9_-]{35}\b""")
 
     override suspend fun inspect(target: ScanTarget): List<Finding> {
-        if (target.extension != "apk") return emptyList()
+        val ext = target.extension
+        // .apk dışında, AndroidManifest.xml içeren .zip dosyaları da APK'dır
+        // (yeniden adlandırılarak gizlenmiş olabilir).
+        if (ext != "apk" && ext != "zip") return emptyList()
+        if (isSelfApk(target)) return emptyList()
+        if (ext == "zip" && !looksLikeApk(target.file)) return emptyList()
         val out = mutableListOf<Finding>()
+
+        if (ext == "zip") {
+            out += Finding(
+                detector = name, ruleId = "APK_DISGUISED",
+                severity = Severity.MEDIUM, weight = 40,
+                evidence = mapOf("extension" to ext, "note" to "APK, .zip uzantısıyla gizlenmiş")
+            )
+        }
 
         var manifest: ByteArray? = null
         var dynamicCode = false
@@ -149,6 +189,9 @@ class ApkAnalyzer(@Suppress("UNUSED_PARAMETER") context: Context) : Detector {
         } catch (e: Exception) {
             null
         }
+
+        // Kopyalanmış olsa bile NexGuard'ın kendi paketi tehdit sayılmaz.
+        if (pi?.packageName == ownPackage) return emptyList()
 
         if (pi == null) {
             if (out.none { it.ruleId == "APK_PARSE_ERROR" }) {

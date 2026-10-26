@@ -113,10 +113,12 @@ class AppsViewModel @Inject constructor(
                         pm.getApplicationIcon(ai).toBitmap(64, 64).asImageBitmap()
                     } catch (e: Exception) { null }
                     val isSystem = (ai.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                    // NexGuard kendi paketini riskli göstermez; güçlü izinleri işlevi gereğidir.
+                    val isSelf = pi.packageName == context.packageName
                     val debuggable = (ai.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
                     val reasons = mutableListOf<String>()
                     var risk = 0
-                    if (!isSystem) {
+                    if (!isSystem && !isSelf) {
                         risk += (dangerous.size * 5).coerceAtMost(40)
                         if (dangerous.any { it.contains("SMS") }) {
                             risk += 18
@@ -144,7 +146,9 @@ class AppsViewModel @Inject constructor(
                             reasons += "Bilinmeyen kaynak (sideload)"
                         }
                     }
-                    if (reasons.isEmpty() && dangerous.isNotEmpty()) reasons += "${dangerous.size} hassas izin"
+                    if (!isSelf && !isSystem && reasons.isEmpty() && dangerous.isNotEmpty()) {
+                        reasons += "${dangerous.size} hassas izin"
+                    }
                     AppRow(
                         label = label,
                         packageName = pi.packageName,
@@ -568,13 +572,21 @@ private fun AppDetailDialog(
                     }
                 } else if (result != null) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        VerdictPill(result.verdict)
+                        if (result.status.isIssue) ScanStatusPill(result.status) else VerdictPill(result.verdict)
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            "${if (result.verdict == Verdict.CLEAN) "Tehdit yok" else ThreatCatalog.threatType(result.findings)} · ${result.score}/100",
+                            when {
+                                result.status.isIssue -> result.error ?: "Analiz tamamlanamadı"
+                                result.isCleanFile -> "Tehdit yok · ${result.score}/100"
+                                else -> "${ThreatCatalog.threatType(result.findings)} · ${result.score}/100"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.Medium,
-                            color = if (result.verdict == Verdict.CLEAN) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error
+                            color = when {
+                                result.status.isIssue -> Color(0xFFE08A00)
+                                result.isCleanFile -> Color(0xFF2E7D32)
+                                else -> MaterialTheme.colorScheme.error
+                            }
                         )
                     }
                     if (result.findings.isNotEmpty()) {

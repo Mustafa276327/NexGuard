@@ -10,8 +10,16 @@ göstermek ve tehditleri güvenli biçimde izole etmektir.
   kurulu APK'lar taranır. Canlı dosya akışı, filtreler, ilerleme, durdurma ve özet ekranı vardır.
 - **Çok katmanlı analiz:** Bilinen hash imzaları, EICAR, APK/DEX ve izin analizi, arşiv incelemesi,
   PE başlıkları, betik komutları, belge içindeki çalıştırılabilir içerik, entropi ve IOC taraması.
+- **İçerik tabanlı tür tanıma:** Uzantıya güvenilmez; dosyanın gerçek baytları (magic) incelenir. Yanlış
+  etiketlenmiş görseller (ör. WebP/PNG dosyasının `.jpg` olması) tehdit sayılmaz; buna karşılık görsel
+  kılığındaki çalıştırılabilir/arşiv içerik ve görselin sonuna eklenmiş yük (polyglot) yakalanır.
+  APK'nın `.zip` olarak yeniden adlandırılması da tespit edilir.
 - **Önbellek:** Yalnızca değişmemiş **temiz** dosyalar için kullanılır. Tehditler ve değişen dosyalar
   her zaman yeniden taranır; motor sürümü değişince önbellek geçersiz olur.
+- **Dürüst tarama durumu:** Dosya bulunamazsa, okunamazsa, içeriği değişirse veya bir dedektör hata
+  verirse sonuç asla "temiz" olarak sunulmaz. `TAMAM`, `KISMİ`, `BULUNAMADI`, `OKUNAMADI` ve `HATA`
+  durumları ayrı gösterilir; yalnızca tamamlanmış ve tehdit içermeyen tarama yeşil `TEMİZ` sayılır.
+  Teknik sorunlar tehdit sayılmaz ve önbelleğe yazılmaz.
 - **Gerçek zamanlı izleme:** İndirilenler ve yeni kurulan uygulamalar izlenir; tehdit bildirimi ve
   isteğe bağlı otomatik karantina uygulanır.
 - **AES-256-GCM karantina:** Dosyalar Android Keystore anahtarıyla parçalı şifrelenir. Geri yüklemede
@@ -29,6 +37,20 @@ göstermek ve tehditleri güvenli biçimde izole etmektir.
   adları her zaman tehlikeli kabul edilir.
 - **Canlı log:** Tarama, izleme ve karantina olayları bellekte tutulur; dosya yolu ve kişisel içerik
   yazılmaz.
+
+## Tarama durumları
+
+| Durum | Anlamı | Tehdit sayılır mı? |
+|---|---|---|
+| `TAMAM` | Tüm dedektörler çalıştı, dosya tarama sırasında değişmedi. | Hükme göre |
+| `KISMİ` | Bir/birden fazla dedektör hata verdi veya dosya tarandığı sırada değişti. | Hayır (hüküm kesin değil) |
+| `BULUNAMADI` | Dosya silinmiş/taşınmış ya da yol dosya değil. | Hayır |
+| `OKUNAMADI` | Dosya var ama izin/erişim nedeniyle okunamadı. | Hayır |
+| `HATA` | İçerik okunamadı, SHA-256 hesaplanamadı. | Hayır |
+
+Karar kuralı: `ScanResult.isCleanFile` yalnızca `status == COMPLETED && verdict == CLEAN` olduğunda
+`true` döner. Karantina, bildirim ve tehdit sayacı yalnızca `verdict` alanına bakmaya devam eder;
+teknik hata sonuçları önbelleğe yazılmaz ve oturum özetinde "sorun" olarak sayılır.
 
 ## Gizlilik ve güvenlik modeli
 
@@ -91,6 +113,11 @@ chmod +x gradlew
 
 Çıktı: `app/build/outputs/apk/release/app-release.apk`.
 
+Release imzası kaynak kodda tutulmaz. `local.properties` (git dışı) veya ortam değişkeni olarak
+`NEXGUARD_STORE_FILE`, `NEXGUARD_STORE_PASSWORD`, `NEXGUARD_KEY_ALIAS`, `NEXGUARD_KEY_PASSWORD`
+tanımlanmalıdır; eksikse `assembleRelease` açık bir hatayla durur. Debug derlemesi AGP'nin otomatik
+debug anahtarıyla imzalanır ve release anahtarını kullanmaz. Ayrıntı: `keystore/README.md`.
+
 Termux/FUSE ortamında `./gradlew` çalışmazsa:
 
 ```bash
@@ -119,6 +146,12 @@ Risk puanlama ve URL analizi birim testleri `core/common/src/test` altındadır.
   gerektirebilir. Anahtar olmadan özellik sessizce devre dışı kalır ve yerel tarama sonucu korunur.
 - Wi-Fi tarama sonuçları Android sürümüne ve konum servisi durumuna göre sınırlanabilir.
 - `Android/data` ve `Android/obb` dizinleri erişim kısıtları nedeniyle atlanır.
+- Gizli dizinler ve gizli dosyalar (`.gs_fs0`, `.thumbnails`, `.trash` gibi uygulama önbellekleri)
+  taranmaz. Buradaki `.jpg` dosyaları gerçek görsel olmadığı için yanlış alarm kaynağıydı.
+- Tam taramada kurulu uygulamaların yalnızca kullanıcı tarafından kurulanları incelenir; sistem
+  uygulamaları ve NexGuard'ın kendi paketi taranmaz (değiştirilemezler, güçlü izinleri yanlış alarm üretir).
+- Görsel sonuna eklenmiş yük, dosyanın son 16 KB'ı içinde aranır; daha büyük polyglot dosyalarda
+  ek yükün başlangıcı bu pencerenin dışında kalabilir.
 
 ## Lisans
 

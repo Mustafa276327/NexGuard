@@ -111,7 +111,8 @@ interface ScanSessionDao {
 
     @Query(
         "UPDATE scan_sessions SET finishedAt = :finishedAt, filesScanned = :files, " +
-            "threats = :threats, cachedFiles = :cached, status = :status, score = :score WHERE id = :id"
+            "threats = :threats, cachedFiles = :cached, errors = :errors, status = :status, " +
+            "score = :score WHERE id = :id"
     )
     suspend fun finish(
         id: String,
@@ -119,6 +120,7 @@ interface ScanSessionDao {
         files: Int,
         threats: Int,
         cached: Int,
+        errors: Int,
         status: String,
         score: Int
     )

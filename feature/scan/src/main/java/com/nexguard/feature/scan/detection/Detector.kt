@@ -49,6 +49,27 @@ fun java.io.File.readHead(max: Int): ByteArray {
     return if (off == max) buf else buf.copyOf(off)
 }
 
+/**
+ * Dosyanın son [max] baytını okur. Görsel/medya dosyalarına sonradan eklenmiş
+ * yükleri (polyglot) yakalamak için kullanılır.
+ */
+fun java.io.File.readTail(max: Int): ByteArray {
+    if (max <= 0 || !isFile) return byteArrayOf()
+    val len = length()
+    if (len <= 0) return byteArrayOf()
+    val start = (len - max).coerceAtLeast(0)
+    return try {
+        java.io.RandomAccessFile(this, "r").use { raf ->
+            raf.seek(start)
+            val buf = ByteArray((len - start).toInt())
+            raf.readFully(buf)
+            buf
+        }
+    } catch (e: Exception) {
+        byteArrayOf()
+    }
+}
+
 interface Detector {
     val name: String
 
