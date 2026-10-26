@@ -25,7 +25,13 @@ GitHub Secrets kullanın.
 
 ## Not: anahtar rotasyonu
 
-Bu anahtar bir dönem depoya işlenmişti; parolası da kaynak kodda sabitti. Depo public ise
-anahtar ele geçirilmiş sayılmalıdır. Yeni bir anahtarla rotasyon yapılırsa yüklü
-kullanıcılar uygulamayı kaldırıp yeniden kurmak zorunda kalır (aynı `applicationId`).
-Karar kullanıcıya aittir; bu dosya yalnızca durumu belgeler.
+Bu anahtar bir dönem depoya işlenmişti; parolası da kaynak kodda sabitti. Depo public
+olduğu için eski anahtar ele geçirilmiş sayılır. **26.10.2026'da 1.1.0 sürümüyle yeni bir
+4096 bit RSA anahtarına geçildi** (alias `nexguard`).
+
+- 1.0.0 ve öncesi kurulumlar, yeni imzayla gelen güncellemeyi doğrudan kuramaz; uygulama
+  kaldırılıp yeniden kurulmalıdır (tarama geçmişi/karantina silinir).
+- Eski anahtar yalnızca arşiv amacıyla yerelde `nexguard-1.0.0.jks` olarak tutulur; yeni
+  sürümleri imzalamak için kullanılmaz.
+- Yeni anahtarın yedeği depo dışında (`~/nexguard-signing-backup/`) tutulur. Parola
+  `local.properties` içindedir; Git'e eklenmez.
