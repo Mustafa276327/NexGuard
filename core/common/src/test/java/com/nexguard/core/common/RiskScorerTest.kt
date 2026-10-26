@@ -1,6 +1,7 @@
 package com.nexguard.core.common
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -11,8 +12,16 @@ class RiskScorerTest {
         rule: String,
         severity: Severity,
         weight: Int,
-        evidence: Map<String, String> = emptyMap()
-    ) = Finding(detector = detector, ruleId = rule, severity = severity, weight = weight, evidence = evidence)
+        evidence: Map<String, String> = emptyMap(),
+        warningOnly: Boolean = false
+    ) = Finding(
+        detector = detector,
+        ruleId = rule,
+        severity = severity,
+        weight = weight,
+        evidence = evidence,
+        warningOnly = warningOnly
+    )
 
     @Test
     fun `clean when there are no findings`() {
@@ -71,6 +80,63 @@ class RiskScorerTest {
             finding("c", "X3", Severity.CRITICAL, 90)
         )
         assertEquals(100, RiskScorer.score(many))
+    }
+
+    @Test
+    fun `warning only findings do not affect score or verdict`() {
+        val warnings = listOf(
+            finding("python", "PY_SCRIPT", Severity.INFO, 0, warningOnly = true),
+            finding("python", "PY_NETWORK", Severity.LOW, 16, warningOnly = true),
+            finding("python", "PY_REVERSE_SHELL", Severity.LOW, 24, warningOnly = true)
+        )
+        assertEquals(0, RiskScorer.score(warnings))
+        assertEquals(Verdict.CLEAN, RiskScorer.verdict(RiskScorer.score(warnings), warnings))
+    }
+
+    @Test
+    fun `warning findings do not hide a definite malware signature`() {
+        val findings = listOf(
+            finding("python", "PY_SCRIPT", Severity.INFO, 0, warningOnly = true),
+            finding("hash", "KNOWN_BAD_HASH", Severity.CRITICAL, 95)
+        )
+        val score = RiskScorer.score(findings)
+        assertTrue("Kesin imza skoru korunmalı: $score", score >= 90)
+        assertEquals(Verdict.DANGEROUS, RiskScorer.verdict(score, findings))
+    }
+
+    @Test
+    fun `clean result with findings is a warning`() {
+        val warning = Finding(
+            detector = "python", ruleId = "PY_SCRIPT", severity = Severity.INFO, weight = 0,
+            warningOnly = true
+        )
+        val result = ScanResult(
+            targetPath = "/storage/emulated/0/Download/arac.py",
+            sha256 = "abc",
+            verdict = Verdict.CLEAN,
+            score = 0,
+            startedAt = 0,
+            durationMs = 10,
+            findings = listOf(warning),
+            status = ScanStatus.COMPLETED
+        )
+        assertTrue(result.isCleanFile)
+        assertTrue(result.isWarning)
+        assertFalse(result.isThreat)
+    }
+
+    @Test
+    fun `clean result without findings is not a warning`() {
+        val result = ScanResult(
+            targetPath = "/storage/emulated/0/Download/foto.jpg",
+            sha256 = "abc",
+            verdict = Verdict.CLEAN,
+            score = 0,
+            startedAt = 0,
+            durationMs = 10,
+            status = ScanStatus.COMPLETED
+        )
+        assertFalse(result.isWarning)
     }
 
     @Test

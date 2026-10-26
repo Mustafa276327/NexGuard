@@ -20,6 +20,16 @@ göstermek ve tehditleri güvenli biçimde izole etmektir.
   verirse sonuç asla "temiz" olarak sunulmaz. `TAMAM`, `KISMİ`, `BULUNAMADI`, `OKUNAMADI` ve `HATA`
   durumları ayrı gösterilir; yalnızca tamamlanmış ve tehdit içermeyen tarama yeşil `TEMİZ` sayılır.
   Teknik sorunlar tehdit sayılmaz ve önbelleğe yazılmaz.
+- **Açıklamalı uyarılar:** Tehdit eşiğinin altında kalan bulgular kırmızı alarm yerine amber `UYARI`
+  olarak gösterilir; canlı akışta "Uyarılar" filtresi ve oturum özetinde uyarı sayısı bulunur.
+- **Python geliştirici betikleri:** `.py`, `.pyw` ve `.ipynb` dosyaları tehdit sayılmaz. İçe aktarılan
+  modüller ve betiğin ne yaptığı (ağ erişimi, komut çalıştırma, gizleme, ters kabuk, kimlik bilgisi
+  erişimi, kalıcılık, dosya silme/şifreleme) açıklamalı uyarı olarak raporlanır. EICAR veya bilinen
+  kötü hash gibi **kesin imzalar** Python dosyalarında da tehdit olarak kalır.
+- **Sistem uygulamaları güvenilir:** Sistem bölümündeki (`/system`, `/product`, `/vendor`, `/apex`)
+  uygulamalar platform imzasıyla geldiği ve salt okunur olduğu için güvenli kabul edilir; tam taramaya
+  dahil edilmez ve uygulama ekranında `GÜVENİLİR` olarak gösterilir. NexGuard kendi paketini de
+  güvenilir sayar.
 - **Gerçek zamanlı izleme:** İndirilenler ve yeni kurulan uygulamalar izlenir; tehdit bildirimi ve
   isteğe bağlı otomatik karantina uygulanır.
 - **AES-256-GCM karantina:** Dosyalar Android Keystore anahtarıyla parçalı şifrelenir. Geri yüklemede
@@ -27,7 +37,7 @@ göstermek ve tehditleri güvenli biçimde izole etmektir.
 - **Tehdit ayrıntısı:** Virüs/tehdit türü, risk puanı, bulgular, öneriler, karantinaya alma ve kalıcı
   silme seçenekleri.
 - **Uygulama denetimi:** Tehlikeli izinler, eski hedef SDK, debug yapısı, bilinmeyen kaynak ve APK
-  derin analizi.
+  derin analizi. Sistem uygulamaları ve NexGuard kendisi güvenilir kabul edilir; derin analiz yapılmaz.
 - **Cihaz denetimi:** Root, SELinux, ekran kilidi, şifreleme, USB hata ayıklama, yama yaşı, cihaz
   yöneticisi ve pil optimizasyonu kontrolleri.
 - **Wi-Fi denetimi:** Açık/WEP ağlar ve aynı SSID'nin farklı güvenlik türleriyle yayınlanması

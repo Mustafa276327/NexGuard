@@ -16,6 +16,7 @@ import com.nexguard.feature.scan.detection.HashDatabase
 import com.nexguard.feature.scan.detection.HashDetector
 import com.nexguard.feature.scan.detection.PeAnalyzer
 import com.nexguard.feature.scan.detection.PrefilterDetector
+import com.nexguard.feature.scan.detection.PythonAnalyzer
 import com.nexguard.feature.scan.detection.ScanCache
 import com.nexguard.feature.scan.detection.ScanOptions
 import com.nexguard.feature.scan.detection.ScanOrchestrator
@@ -41,6 +42,7 @@ class Scanner @Inject constructor(
         ApkAnalyzer(context),
         ArchiveScanner(),
         PeAnalyzer(),
+        PythonAnalyzer(),
         ScriptAnalyzer(),
         DocumentAnalyzer(),
         EntropyDetector(),

@@ -7,7 +7,7 @@ package com.nexguard.feature.scan.detection
  */
 object ScanPolicy {
     /** Dedektör kuralları değiştiğinde artırın; dosya önbelleği geçersiz olur. */
-    const val ENGINE_VERSION = 6
+    const val ENGINE_VERSION = 7
 
     val mediaExtensions = setOf(
         "jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif", "avif", "tif", "tiff",
@@ -27,6 +27,28 @@ object ScanPolicy {
     val archiveExtensions = setOf("zip", "jar", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz")
 
     val scriptExtensions = setOf("js", "jse", "vbs", "vbe", "wsf", "hta", "ps1", "bat", "cmd", "sh", "py", "php", "pl")
+
+    /**
+     * Geliştirici betikleri. Bunlar tehdit olarak değil, davranışları açıklanan
+     * uyarılar olarak raporlanır; kesin kötü amaçlı imzalar (EICAR, kötü hash)
+     * yine tehdit sayılır.
+     */
+    val pythonExtensions = setOf("py", "pyw", "ipynb")
+
+    /** Sistem uygulamalarının kurulu olduğu salt okunur bölümler. */
+    private val trustedSystemRoots = listOf(
+        "/system/", "/system_ext/", "/product/", "/vendor/", "/apex/", "/odm/"
+    )
+
+    /**
+     * Sistem bölümündeki APK'lar güvenilir kabul edilir: değiştirilemezler,
+     * platform imzasıyla gelirler ve güçlü izinleri işlevlerinin parçasıdır.
+     */
+    fun isTrustedSystemApk(path: String): Boolean {
+        val p = path.replace('\\', '/')
+        if (!p.endsWith(".apk", ignoreCase = true)) return false
+        return trustedSystemRoots.any { p.startsWith(it) }
+    }
 
     fun sampleLimit(extension: String, size: Long): Int = when {
         extension in mediaExtensions -> 64 * 1024

@@ -91,6 +91,48 @@ object ThreatCatalog {
         "MANY_URLS" to RuleInfo("Çok sayıda bağlantı", "Şüpheli Dosya", "Dosya çok sayıda URL içeriyor."),
         "IP_URL" to RuleInfo("IP adresli bağlantı", "Kimlik Avı", "Alan adı yerine doğrudan IP kullanan bağlantı."),
 
+        // --- Python geliştirici betikleri (yalnızca uyarı) ---
+        "PY_SCRIPT" to RuleInfo(
+            "Python betiği", "Geliştirici Betiği",
+            "Bu bir Python geliştirici betiğidir; tehdit olarak işaretlenmedi. " +
+                "Aşağıdaki davranışlar bilgilendirme amaçlıdır, kaynağına güveniyorsanız çalıştırabilirsiniz."
+        ),
+        "PY_NETWORK" to RuleInfo(
+            "Ağ erişimi", "Geliştirici Betiği",
+            "Betik ağa bağlanıyor (requests/urllib/socket). Geliştirici betiği için normaldir; " +
+                "kaynağını bilmiyorsanız çalıştırmayın."
+        ),
+        "PY_EXEC" to RuleInfo(
+            "Komut çalıştırma", "Geliştirici Betiği",
+            "Betik sistem komutu veya dinamik kod çalıştırabiliyor (subprocess/os.system/eval/exec). " +
+                "Güvendiğiniz otomasyon betiklerinde yaygındır."
+        ),
+        "PY_DOWNLOAD_EXEC" to RuleInfo(
+            "İndir ve çalıştır kalıbı", "Geliştirici Betiği",
+            "Betik ağdan içerik indirip çalıştırma kalıbı içeriyor. Yalnızca uyarı; kaynağını doğrulayın."
+        ),
+        "PY_OBFUSCATION" to RuleInfo(
+            "Gizlenmiş Python kodu", "Geliştirici Betiği",
+            "Kod base64/marshal/zlib ile gizlenmiş olabilir; ne yaptığını gözle görmek zorlaşır."
+        ),
+        "PY_REVERSE_SHELL" to RuleInfo(
+            "Ters kabuk kalıbı", "Geliştirici Betiği",
+            "Betik uzaktan kabuk bağlantısı kurma kalıbı içeriyor. Test aracı olabilir; " +
+                "güvenilmeyen kaynaktan çalıştırmayın."
+        ),
+        "PY_CREDENTIAL" to RuleInfo(
+            "Kimlik bilgisi erişimi", "Geliştirici Betiği",
+            "Betik parola, çerez veya tuş kaydına erişiyor olabilir. Yalnızca uyarı; kullanım amacını doğrulayın."
+        ),
+        "PY_PERSISTENCE" to RuleInfo(
+            "Kalıcılık kurulumu", "Geliştirici Betiği",
+            "Betik crontab/systemd/başlangıç kaydı ekleyerek kendini otomatik başlatabilir."
+        ),
+        "PY_DESTRUCTIVE" to RuleInfo(
+            "Dosya silme/şifreleme", "Geliştirici Betiği",
+            "Betik dosya silebilir veya şifreleyebilir; fidye/cleanup aracı olabilir. Yedek aldıktan sonra çalıştırın."
+        ),
+
         // --- PE / Windows ---
         "PE_PACKED" to RuleInfo("Paketlenmiş Windows programı", "Şüpheli Windows Programı", "Bölüm adları bilinen paketleyicilerle eşleşiyor."),
         "PE_SUSPICIOUS_IMPORTS" to RuleInfo("Şüpheli Windows API'leri", "Şüpheli Windows Programı", "Bellek yazma/uzaktan işlem gibi riskli API'ler kullanılıyor."),

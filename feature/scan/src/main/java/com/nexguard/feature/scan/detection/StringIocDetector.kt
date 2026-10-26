@@ -45,6 +45,10 @@ class StringIocDetector : Detector {
 
         val text = String(bytes, Charsets.ISO_8859_1)
         val out = mutableListOf<Finding>()
+        // Python betiklerinde komut tokenleri ve URL'ler geliştirme için sık
+        // görülür. Bunlar tehdit değil, PythonAnalyzer ile birlikte açıklamalı
+        // uyarı olarak raporlanır.
+        val python = target.extension in ScanPolicy.pythonExtensions
 
         if (text.contains(eicar)) {
             out += Finding(
@@ -53,18 +57,20 @@ class StringIocDetector : Detector {
             )
         }
 
-        val foundCommands = commandTokens.filter { text.contains(it, ignoreCase = true) }
-        // Kaynak/betik dosyalarda tek bir token (ör. eval) sık görülür; en az iki
-        // güçlü belirti veya betik dışı dosyalar için tek token yeterlidir.
-        val commandThreshold = if (target.extension in ScanPolicy.scriptExtensions) 2 else 1
-        if (foundCommands.size >= commandThreshold) {
-            out += Finding(
-                detector = name,
-                ruleId = "SUSPICIOUS_COMMAND",
-                severity = if (foundCommands.size >= 3) Severity.MEDIUM else Severity.LOW,
-                weight = minOf(45, 12 + foundCommands.size * 8),
-                evidence = mapOf("tokens" to foundCommands.take(8).joinToString(", "), "count" to foundCommands.size.toString())
-            )
+        if (!python) {
+            val foundCommands = commandTokens.filter { text.contains(it, ignoreCase = true) }
+            // Kaynak/betik dosyalarda tek bir token (ör. eval) sık görülür; en az iki
+            // güçlü belirti veya betik dışı dosyalar için tek token yeterlidir.
+            val commandThreshold = if (target.extension in ScanPolicy.scriptExtensions) 2 else 1
+            if (foundCommands.size >= commandThreshold) {
+                out += Finding(
+                    detector = name,
+                    ruleId = "SUSPICIOUS_COMMAND",
+                    severity = if (foundCommands.size >= 3) Severity.MEDIUM else Severity.LOW,
+                    weight = minOf(45, 12 + foundCommands.size * 8),
+                    evidence = mapOf("tokens" to foundCommands.take(8).joinToString(", "), "count" to foundCommands.size.toString())
+                )
+            }
         }
 
         val urls = urlRegex.findAll(text).map { it.value.trimEnd('.', ',', ')', ';') }.toSet()
@@ -76,24 +82,30 @@ class StringIocDetector : Detector {
             if (Regex("""\b(?:\d{1,3}\.){3}\d{1,3}\b""").matches(host)) ipUrl = true
         }
         if (riskyHosts.isNotEmpty()) {
-            out += Finding(
+            val evidence = mapOf("count" to riskyHosts.size.toString(), "url" to riskyHosts.first())
+            out += if (python) warning("SUSPICIOUS_TLD", 16, evidence)
+            else Finding(
                 detector = name,
                 ruleId = "SUSPICIOUS_TLD",
                 severity = Severity.MEDIUM,
                 weight = minOf(35, 15 + riskyHosts.size * 5),
-                evidence = mapOf("count" to riskyHosts.size.toString(), "url" to riskyHosts.first())
+                evidence = evidence
             )
         }
         if (ipUrl) {
-            out += Finding(
+            val evidence = mapOf("note" to "IP adresli bağlantı")
+            out += if (python) warning("IP_URL", 14, evidence)
+            else Finding(
                 detector = name, ruleId = "IP_URL", severity = Severity.MEDIUM, weight = 20,
-                evidence = mapOf("note" to "IP adresli bağlantı")
+                evidence = evidence
             )
         }
         if (urls.size > 30) {
-            out += Finding(
+            val evidence = mapOf("count" to urls.size.toString())
+            out += if (python) warning("MANY_URLS", 12, evidence)
+            else Finding(
                 detector = name, ruleId = "MANY_URLS", severity = Severity.LOW, weight = 15,
-                evidence = mapOf("count" to urls.size.toString())
+                evidence = evidence
             )
         }
         return out
@@ -105,6 +117,16 @@ class StringIocDetector : Detector {
         if (ext in ScanPolicy.scriptExtensions || ext in ScanPolicy.documentExtensions) return true
         return FileTypeSniffer.looksLikeText(bytes)
     }
+
+    private fun warning(ruleId: String, weight: Int, evidence: Map<String, String>): Finding =
+        Finding(
+            detector = name,
+            ruleId = ruleId,
+            severity = Severity.LOW,
+            weight = weight.coerceAtMost(20),
+            evidence = evidence,
+            warningOnly = true
+        )
 
     private fun hostOf(url: String): String? = try {
         URI(url).host?.lowercase()

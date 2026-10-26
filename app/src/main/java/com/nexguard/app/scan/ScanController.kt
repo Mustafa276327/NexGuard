@@ -41,6 +41,8 @@ data class ScanUiState(
     val scanned: Int = 0,
     val total: Int = 0,
     val threats: Int = 0,
+    /** Tehdit eşiğinde olmayan, açıklamalı uyarı üreten dosya sayısı. */
+    val warnings: Int = 0,
     val cached: Int = 0,
     /** Teknik olarak tamamlanamayan dosya sayısı (okunamadı, bulunamadı, kısmi). */
     val issues: Int = 0,
@@ -133,13 +135,15 @@ class ScanController @Inject constructor(
                     },
                     onFileDone = { r ->
                         val threat = r.isThreat
+                        val warning = r.isWarning
                         val issue = r.status.isIssue
-                        if (threat || issue || due(lastFeed, 100L)) {
+                        if (threat || warning || issue || due(lastFeed, 100L)) {
                             lastFeed = System.currentTimeMillis()
                             _state.update { st ->
                                 st.copy(
                                     feed = (listOf(r) + st.feed).take(500),
                                     threats = st.threats + if (threat) 1 else 0,
+                                    warnings = st.warnings + if (warning) 1 else 0,
                                     issues = st.issues + if (issue) 1 else 0,
                                     cached = st.cached + if (r.cached) 1 else 0
                                 )
@@ -154,6 +158,7 @@ class ScanController @Inject constructor(
                         current = "",
                         scanned = session.filesScanned,
                         threats = session.threats,
+                        warnings = session.warnings,
                         cached = session.cachedFiles,
                         issues = session.errors,
                         session = session
@@ -162,7 +167,7 @@ class ScanController @Inject constructor(
                 NgLog.i(
                     "Tarama",
                     "$label tamamlandı: ${session.filesScanned} dosya, ${session.threats} tehdit, " +
-                        "${session.errors} sorun, skor ${session.score}"
+                        "${session.warnings} uyarı, ${session.errors} sorun, skor ${session.score}"
                 )
             } catch (e: CancellationException) {
                 NgLog.w("Tarama", "$label kullanıcı tarafından durduruldu")
@@ -174,6 +179,7 @@ class ScanController @Inject constructor(
                     label = label,
                     filesScanned = current.scanned,
                     threats = current.threats,
+                    warnings = current.warnings,
                     cachedFiles = current.cached,
                     errors = current.issues,
                     status = "stopped",

@@ -31,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.nexguard.core.common.ScanResult
 import com.nexguard.core.common.ScanStatus
 import com.nexguard.core.common.Severity
 import com.nexguard.core.common.ThreatCatalog
@@ -248,6 +249,27 @@ fun VerdictPill(verdict: Verdict) {
 }
 
 /**
+ * Tehdit eşiğinin altında kalan, fakat incelenmesi gereken bulgular için
+ * kırmızı alarm yerine açık bir "UYARI" rozeti.
+ */
+@Composable
+fun WarningPill() {
+    val color = Color(0xFFE08A00)
+    StatusPill("UYARI", color.copy(alpha = 0.16f), color)
+}
+
+/** Teknik durum, tehdit ve uyarı durumunu tek yerden doğru rozetle gösterir. */
+@Composable
+fun ResultVerdictPill(result: ScanResult) {
+    when {
+        result.isThreat -> VerdictPill(result.verdict)
+        result.status.isIssue -> ScanStatusPill(result.status)
+        result.isWarning -> WarningPill()
+        else -> VerdictPill(Verdict.CLEAN)
+    }
+}
+
+/**
  * Teknik tarama durumu rozeti. Kesin olmayan sonuçlar yeşil "TEMİZ" yerine
  * durumlarını açıkça gösterir.
  */
@@ -261,11 +283,12 @@ fun ScanStatusPill(status: ScanStatus) {
     }
 }
 
-/** Sonucun genel rengi: teknik sorun turuncu, tehdit kırmızı, temiz yeşil. */
+/** Sonucun genel rengi: teknik sorun/uyarı turuncu, tehdit kırmızı, temiz yeşil. */
 @Composable
-fun resultColor(result: com.nexguard.core.common.ScanResult): Color = when {
+fun resultColor(result: ScanResult): Color = when {
     result.isThreat -> verdictColor(result.verdict)
     result.status.isIssue -> scanStatusColor(result.status)
+    result.isWarning -> Color(0xFFE08A00)
     else -> verdictColor(Verdict.CLEAN)
 }
 

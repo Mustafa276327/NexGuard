@@ -37,7 +37,12 @@ data class Finding(
     val ruleId: String,
     val severity: Severity,
     val weight: Int,
-    val evidence: Map<String, String> = emptyMap()
+    val evidence: Map<String, String> = emptyMap(),
+    /**
+     * Yalnızca bilgilendirme/uyarı amaçlı bulgu. Bu bulgular tehdit hükmünü
+     * ve risk skorunu etkilemez; arayüzde "UYARI" olarak gösterilir.
+     */
+    val warningOnly: Boolean = false
 )
 
 data class ScanResult(
@@ -69,6 +74,14 @@ data class ScanResult(
 
     /** Tehdit hükmü var mı. Teknik hata durumları tehdit sayılmaz. */
     val isThreat: Boolean get() = verdict != Verdict.CLEAN
+
+    /**
+     * Dosya tehdit değil ama incelenmesi gereken bulgular içeriyor.
+     * Özellikle geliştirici betikleri (ör. kullanıcının .py dosyaları) için
+     * "temiz" yerine açıklamalı "uyarı" gösterilir.
+     */
+    val isWarning: Boolean
+        get() = status == ScanStatus.COMPLETED && verdict == Verdict.CLEAN && findings.isNotEmpty()
 }
 
 data class ScanSession(
@@ -79,6 +92,8 @@ data class ScanSession(
     val label: String = "",
     val filesScanned: Int = 0,
     val threats: Int = 0,
+    /** Tehdit eşiğinde olmayan, yalnızca uyarı niteliğindeki dosya sayısı. */
+    val warnings: Int = 0,
     val cachedFiles: Int = 0,
     /** Teknik olarak tamamlanamayan dosya sayısı (okunamadı, bulunamadı, kısmi). */
     val errors: Int = 0,

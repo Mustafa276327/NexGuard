@@ -59,6 +59,16 @@ object DatabaseProvider {
         }
     }
 
+    /**
+     * v3 -> v4: oturum özetine tehdit olmayan uyarı sayısı (ör. Python
+     * betikleri). Eski oturumlar 0 ile korunur.
+     */
+    val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE `scan_sessions` ADD COLUMN `warnings` INTEGER NOT NULL DEFAULT 0")
+        }
+    }
+
     fun get(context: Context): AppDatabase {
         return instance ?: synchronized(this) {
             instance ?: build(context).also { instance = it }
@@ -70,7 +80,7 @@ object DatabaseProvider {
         val factory = SupportFactory(passphrase)
         return Room.databaseBuilder(context, AppDatabase::class.java, "nexguard.db")
             .openHelperFactory(factory)
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
             .build()
     }
 

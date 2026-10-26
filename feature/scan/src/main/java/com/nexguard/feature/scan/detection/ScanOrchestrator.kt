@@ -6,6 +6,7 @@ import com.nexguard.core.common.Finding
 import com.nexguard.core.common.RiskScorer
 import com.nexguard.core.common.ScanResult
 import com.nexguard.core.common.ScanSession
+import com.nexguard.core.common.ScanStatus
 import com.nexguard.core.common.ScanHealth
 import com.nexguard.core.common.ScanStatusOutcome
 import com.nexguard.core.common.ScanStatusPolicy
@@ -88,6 +89,7 @@ class ScanOrchestrator(
                     label = session.label,
                     filesScanned = 0,
                     threats = 0,
+                    warnings = 0,
                     cachedFiles = 0,
                     status = "running"
                 )
@@ -107,6 +109,7 @@ class ScanOrchestrator(
 
         val scannedCounter = AtomicInteger(0)
         val threatCounter = AtomicInteger(0)
+        val warningCounter = AtomicInteger(0)
         val cachedCounter = AtomicInteger(0)
         val issueCounter = AtomicInteger(0)
         val cacheMutex = Mutex()
@@ -123,6 +126,7 @@ class ScanOrchestrator(
                             val done = scannedCounter.incrementAndGet()
                             if (result.cached) cachedCounter.incrementAndGet()
                             if (result.isThreat) threatCounter.incrementAndGet()
+                            if (result.isWarning) warningCounter.incrementAndGet()
                             if (result.status.isIssue) issueCounter.incrementAndGet()
                             onFileDone(result)
                             onProgress(done, paths.size)
@@ -151,6 +155,7 @@ class ScanOrchestrator(
                 finishedAt = System.currentTimeMillis(),
                 filesScanned = scanned,
                 threats = threats,
+                warnings = warningCounter.get(),
                 cachedFiles = cached,
                 errors = issueCounter.get(),
                 status = "completed",
@@ -159,7 +164,10 @@ class ScanOrchestrator(
             finishSession(finished)
             bus.tryEmit(NexEvent.Timeline(com.nexguard.core.common.TimelineEvent(
                 source = "scan", kind = "session_finished",
-                summary = "${finished.label}: $scanned dosya, $threats tehdit",
+                summary = buildString {
+                    append("${finished.label}: $scanned dosya, $threats tehdit")
+                    if (finished.warnings > 0) append(", ${finished.warnings} uyarı")
+                },
                 refId = finished.id
             )))
             finished
@@ -175,6 +183,7 @@ class ScanOrchestrator(
                         finishedAt = System.currentTimeMillis(),
                         filesScanned = scanned,
                         threats = threats,
+                        warnings = warningCounter.get(),
                         cachedFiles = cached,
                         errors = issueCounter.get(),
                         status = "stopped",
@@ -194,6 +203,7 @@ class ScanOrchestrator(
                         finishedAt = System.currentTimeMillis(),
                         filesScanned = scanned,
                         threats = threats,
+                        warnings = warningCounter.get(),
                         cachedFiles = cached,
                         errors = issueCounter.get(),
                         status = "failed",
@@ -212,6 +222,7 @@ class ScanOrchestrator(
                 finishedAt = session.finishedAt ?: System.currentTimeMillis(),
                 files = session.filesScanned,
                 threats = session.threats,
+                warnings = session.warnings,
                 cached = session.cachedFiles,
                 errors = session.errors,
                 status = session.status,
@@ -242,6 +253,24 @@ class ScanOrchestrator(
         val size = f.length()
         val mtime = f.lastModified()
         val extension = f.extension.lowercase()
+
+        // Sistem bölümündeki uygulamalar platform imzasıyla gelir ve salt
+        // okunurdur; kullanıcı uygulaması gibi taranmaz. Apps ekranı da bu
+        // uygulamaları "güvenilir" olarak gösterir.
+        if (ScanPolicy.isTrustedSystemApk(path)) {
+            return ScanResult(
+                targetPath = path,
+                sha256 = "",
+                verdict = Verdict.CLEAN,
+                score = 0,
+                startedAt = startedAt,
+                durationMs = System.currentTimeMillis() - startedAt,
+                sizeBytes = size,
+                cached = false,
+                source = options.source,
+                status = ScanStatus.COMPLETED
+            ).also { bus.tryEmit(NexEvent.ScanFinished(it)) }
+        }
 
         if (options.useCache && !options.deep) {
             cache.cleanCached(path, size, mtime)?.let { hit ->
@@ -345,7 +374,9 @@ class ScanOrchestrator(
         )
 
         // Önbellek yalnızca kesin (tamamlanmış) sonuçlar için kullanılır.
-        if (outcome.status.isConclusive) {
+        // Uyarı içeren sonuçlar önbelleğe yazılmaz; bulgular kaybolmasın ve
+        // uyarılar her taramada görünmeye devam etsin.
+        if (outcome.status.isConclusive && !result.isWarning) {
             val cacheEntity = FileCacheEntity(
                 targetPath = path,
                 sizeBytes = size,

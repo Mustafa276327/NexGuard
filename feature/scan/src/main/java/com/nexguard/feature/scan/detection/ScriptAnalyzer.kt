@@ -13,6 +13,9 @@ class ScriptAnalyzer : Detector {
 
     override suspend fun inspect(target: ScanTarget): List<Finding> {
         if (target.extension !in ScanPolicy.scriptExtensions) return emptyList()
+        // Python dosyaları PythonAnalyzer tarafından açıklamalı uyarı olarak
+        // işlenir; burada kritik "indir-çalıştır" hükmü üretilmez.
+        if (target.extension in ScanPolicy.pythonExtensions) return emptyList()
         val text = String(target.sample(), Charsets.ISO_8859_1)
         if (text.isBlank()) return emptyList()
         val lower = text.lowercase()
